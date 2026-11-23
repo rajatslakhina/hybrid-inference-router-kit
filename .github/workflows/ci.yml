@@ -15,7 +15,7 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Toolchain
         run: swift --version && xcodebuild -version
       - name: Build from a clean checkout, warnings as errors
@@ -28,7 +28,7 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Build both library targets for the iOS Simulator SDK
         run: >
           xcodebuild build
@@ -41,6 +41,6 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Apply each mutant, run its test, require a failure
         run: python3 Scripts/mutation_check.py
