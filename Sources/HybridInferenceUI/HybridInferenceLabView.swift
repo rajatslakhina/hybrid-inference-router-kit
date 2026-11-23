@@ -167,7 +167,7 @@ private struct ControlsCard: View {
     var body: some View {
         Card {
             HStack(spacing: 8) {
-                Button("Serve day \(lab.runs + 1) (\(lab.nextBatch.count))") { Task { await lab.runTraffic() } }
+                Button("Serve batch \(lab.nextBatchNumber)/\(lab.scenario.trafficBatches.count) (\(lab.nextBatch.count))") { Task { await lab.runTraffic() } }
                     .buttonStyle(.borderedProminent)
                     .accessibilityIdentifier("runTraffic")
                 Button("Retrain + gate") { Task { await lab.retrain(drifted: false) } }
@@ -264,8 +264,10 @@ private struct GateCard: View {
         case .accuracyRegressed(let from, let to): return "Accuracy fell \(percent(from)) → \(percent(to))"
         case .recallRegressed(let label, let from, let to):
             return "Recall for \(label) fell \(percent(from)) → \(percent(to))"
-        case .localPrecisionBelowFloor(let value, let floor):
+        case .localPrecisionBelowFloor(let value?, let floor):
             return "Local precision \(percent(value)) is below the \(percent(floor)) floor"
+        case .localPrecisionBelowFloor(nil, _):
+            return "Answers nothing on device, so there is no local precision to trust"
         case .noImprovement: return "No gain in accuracy or on-device share"
         }
     }

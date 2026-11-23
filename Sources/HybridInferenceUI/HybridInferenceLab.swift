@@ -142,6 +142,12 @@ public final class HybridInferenceLab {
         }
     }
 
+    /// 1-based number of the batch the next `runTraffic()` serves (batches cycle after the last one).
+    public var nextBatchNumber: Int {
+        guard !scenario.trafficBatches.isEmpty else { return 0 }
+        return runs % scenario.trafficBatches.count + 1
+    }
+
     /// The batch the next `runTraffic()` will serve.
     public var nextBatch: [String] {
         guard !scenario.trafficBatches.isEmpty else { return [] }
