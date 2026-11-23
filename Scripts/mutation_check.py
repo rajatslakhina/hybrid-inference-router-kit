@@ -14,6 +14,7 @@ import subprocess
 import sys
 
 SRC = pathlib.Path("Sources/HybridInference")
+UI = pathlib.Path("Sources/HybridInferenceUI")
 
 MUTANTS = [
     (
@@ -144,6 +145,13 @@ MUTANTS = [
         "self.timeout = RouterConfiguration.sanitizedTimeout(configuration.teacherTimeout)",
         "self.timeout = configuration.teacherTimeout",
         "HybridRouterTests/testRouterSanitisesAZeroTimeoutSetAfterInit",
+    ),
+    (
+        "lab-price-ignores-the-routers-floor",
+        UI / "HybridInferenceLab.swift",
+        "let base = max(scenario.configuration.pricePerCallUnits, 0)",
+        "let base = scenario.configuration.pricePerCallUnits",
+        "LabStageTests/testRaisingAnAbsurdNegativePriceKeepsTheRoutersFloor",
     ),
 ]
 

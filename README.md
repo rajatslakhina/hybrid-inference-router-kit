@@ -166,13 +166,13 @@ if PromotionGate().decide(candidate: candidate, incumbent: incumbent).isPromotio
 Add it with Swift Package Manager:
 
 ```swift
-.package(url: "https://github.com/rajatslakhina/hybrid-inference-router-kit.git", from: "1.2.3")
+.package(url: "https://github.com/rajatslakhina/hybrid-inference-router-kit.git", from: "1.2.4")
 ```
 
 ## Verification
 
 - `swift build -Xswiftc -warnings-as-errors` from a clean `.build`: 0 warnings, 0 errors.
-- `swift test`: 108 XCTest tests, 0 failures. They include hand-computed Laplace probabilities, bit-for-bit deterministic
+- `swift test`: 109 XCTest tests, 0 failures. They include hand-computed Laplace probabilities, bit-for-bit deterministic
   predictions across separately trained instances, a golden
   FNV-1a vector and a golden shadow-sample bucket, calibration tie handling and floors, every breaker
   transition, budget window roll-over and saturation, 40 overlapping escalations against a 10-call budget (the
@@ -184,12 +184,12 @@ Add it with Swift Package Manager:
   `LabStageTests` drives `HybridInferenceLab` with the demo app's exact scenario and asserts the numbers shown
   in its four screenshots, plus the retired-teacher migration and the 4× price rise. The demo's CI checks that
   its scenario still matches this copy.
-- `python3 Scripts/mutation_check.py`: 16 mutants. Each one removes or reorders one guard: in-flight
+- `python3 Scripts/mutation_check.py`: 17 mutants. Each one removes or reorders one guard: in-flight
   reservations, tie handling, stale breaker results ×2, retirement generation, the off-list label check,
   cancellation accounting, the router recognising its caller's cancellation, `ClaudeTeacher` recognising a
   cancelled task, the timeout timer standing down, the eval leak guard, per-label recall in the gate,
   budget-before-breaker order, the shadow drain taking the half-open probe, the non-finite confidence
-  check, and the router re-sanitising a timeout set after initialisation. A mutant counts as
+  check, the router re-sanitising a timeout set after initialisation, and the lab's price floor. A mutant counts as
   killed only if its named test ran and failed.
 - CI ([Actions](https://github.com/rajatslakhina/hybrid-inference-router-kit/actions)) runs three `macos-15`
   jobs on pushes to `main`, on `v*` tags and on pull requests: build and test with warnings as errors, an iOS

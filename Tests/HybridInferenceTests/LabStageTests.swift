@@ -157,6 +157,26 @@ final class LabStageTests: XCTestCase {
         XCTAssertEqual(state.spentUnits, 60)
     }
 
+    /// A price below `Int.min / 4`, set on the configuration after init, used to overflow "raise price 4×"
+    /// into `Int.max`. The lab now floors the base at 0 exactly as the router does.
+    func testRaisingAnAbsurdNegativePriceKeepsTheRoutersFloor() async throws {
+        let base = try Tickets.demoScenario()
+        var configuration = base.configuration
+        configuration.pricePerCallUnits = Int.min
+        let scenario = LabScenario(
+            title: base.title, seed: base.seed, evalSet: base.evalSet, trafficBatches: base.trafficBatches,
+            teacherModelID: base.teacherModelID, teacherRules: base.teacherRules,
+            teacherFallback: base.teacherFallback, configuration: configuration,
+            targetPrecision: base.targetPrecision, gate: base.gate, shadowCallsPerRun: base.shadowCallsPerRun
+        )
+        let lab = HybridInferenceLab(scenario: scenario)
+        await lab.prepare()
+        await lab.setPriceRaised(true)
+        XCTAssertEqual(try snapshot(lab).pricePerCallUnits, 0)
+        await lab.runTraffic()
+        XCTAssertEqual(try snapshot(lab).answeredByTeacher, 40)
+    }
+
     func testPrepareResetsTeacherModeAndPrice() async throws {
         let lab = try makeLab()
         await lab.prepare()

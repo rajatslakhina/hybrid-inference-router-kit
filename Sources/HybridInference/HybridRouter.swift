@@ -6,13 +6,13 @@ public struct RouterConfiguration: Sendable {
     /// Starting policy. Replace it with the calibrated one via `install(_:policy:)`.
     public var policy: EscalationPolicy
     public var budget: BudgetConfiguration
-    /// What one teacher call costs, in the budget's units. Change it at runtime with `reprice`. The router
-    /// treats a negative value as 0, whether it was set in `init` or afterwards.
+    /// What one teacher call costs, in the budget's units. Change it at runtime with `reprice`. `init` floors it
+    /// at 0; a value assigned later is stored as is, and the router treats a negative value as 0.
     public var pricePerCallUnits: Int
     public var breaker: BreakerConfiguration
-    /// Latency budget for one teacher call, enforced by cancellation (see `withTimeout`). The stored value is
-    /// whatever was last assigned; the router always uses it clamped to `(0, maxTeacherTimeout]`, with a
-    /// non-positive value falling back to 8 s, whether it was set in `init` or afterwards.
+    /// Latency budget for one teacher call, enforced by cancellation (see `withTimeout`). `init` sanitises it
+    /// (non-positive → 8 s, clamped to `maxTeacherTimeout`). A value assigned to the property later is stored
+    /// as is; the router always uses it clamped to `(0, maxTeacherTimeout]`, non-positive falling back to 8 s.
     public var teacherTimeout: Duration
     /// Share of confidently-answered requests also sent to the teacher in the background, `0...1`.
     public var shadowSampleRate: Double
