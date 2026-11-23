@@ -171,30 +171,35 @@ public struct NaiveBayesStudent: StudentModel {
         // Unknown tokens carry no evidence in multinomial NB; they only lower `knownTokenFraction`.
         let vocabularySize = Double(vocabulary.count)
 
-        var logScores: [ClassLabel: Double] = [:]
-        for (label, labelStats) in stats {
+        // Iterate in sorted-label order and sum in arrays, never in dictionary order. Swift dictionaries do
+        // not promise the same iteration order for two instances with the same contents, and a different
+        // summation order changes the last bit of a probability. A model must give bit-identical answers
+        // for the same input, or an eval example sitting exactly on the calibrated threshold can flip
+        // between "local" and "escalate" from one call to the next.
+        let ordered: [(label: ClassLabel, stats: LabelStats)] = labels.compactMap { label in
+            stats[label].map { (label, $0) }
+        }
+        var logScores: [Double] = []
+        logScores.reserveCapacity(ordered.count)
+        for entry in ordered {
             // alpha > 0 and vocabularySize >= 1, so the denominator is strictly positive. The log of the
             // numerator and denominator are taken separately: for a tiny alpha (down to the smallest
             // subnormal) the ratio would underflow to 0 and log(0) = -inf would turn the softmax into NaN.
-            let logDenominator = log(Double(labelStats.totalTokens) + alpha * vocabularySize)
-            var score = labelStats.logPrior
+            let logDenominator = log(Double(entry.stats.totalTokens) + alpha * vocabularySize)
+            var score = entry.stats.logPrior
             for token in known {
-                score += log(Double(labelStats.tokenCounts[token, default: 0]) + alpha) - logDenominator
+                score += log(Double(entry.stats.tokenCounts[token, default: 0]) + alpha) - logDenominator
             }
-            logScores[label] = score
+            logScores.append(score)
         }
 
         // Numerically stable softmax: subtract the max so the largest term is exp(0) = 1.
-        let maxScore = logScores.values.max() ?? 0
+        let maxScore = logScores.max() ?? 0
+        let weights = logScores.map { exp($0 - maxScore) }
+        let sum = weights.reduce(0, +)
         var probabilities: [ClassLabel: Double] = [:]
-        var sum = 0.0
-        for (label, score) in logScores {
-            let value = exp(score - maxScore)
-            probabilities[label] = value
-            sum += value
-        }
-        if sum > 0 {
-            for (label, value) in probabilities { probabilities[label] = value / sum }
+        for (entry, weight) in zip(ordered, weights) {
+            probabilities[entry.label] = sum > 0 ? weight / sum : weight
         }
 
         return StudentPrediction(

@@ -102,6 +102,22 @@ final class NaiveBayesStudentTests: XCTestCase {
         XCTAssertEqual(prediction.distribution.ranked.reduce(0) { $0 + $1.probability }, 1, accuracy: 1e-9)
     }
 
+    /// Same input, same bits: across calls and across separately trained instances. Summing in dictionary
+    /// order made the last bit vary between instances, which once flipped an eval example sitting exactly on
+    /// the calibrated threshold from "local" to "escalate" in CI.
+    func testPredictionsAreBitForBitDeterministic() throws {
+        let texts = Tickets.eval.map(\.text) + Tickets.dayTwo
+        let first = try NaiveBayesStudent(training: Tickets.seed, version: "v")
+        let expected = texts.map { first.predict($0).distribution.ranked.map(\.probability.bitPattern) }
+        for _ in 0..<50 {
+            let again = try NaiveBayesStudent(training: Tickets.seed, version: "v")
+            for (index, text) in texts.enumerated() {
+                XCTAssertEqual(again.predict(text).distribution.ranked.map(\.probability.bitPattern), expected[index], text)
+                XCTAssertEqual(first.predict(text).distribution.ranked.map(\.probability.bitPattern), expected[index], text)
+            }
+        }
+    }
+
     func testEmptyInputHasZeroTokensAndProbabilitiesStillSumToOne() throws {
         let model = try NaiveBayesStudent(training: Tickets.seed, version: "v")
         let prediction = model.predict("")

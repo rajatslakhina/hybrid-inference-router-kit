@@ -93,7 +93,9 @@ version-pinned remote package.
    out-of-distribution floors the policy will ship with, so the coverage it reports is the coverage you get.
    A non-finite probability (NaN or infinity) is never trusted. It never cuts inside a tie, because the
    policy answers locally at `>=` and a tied wrong answer would be hidden. Each retrained model gets its own
-   threshold, because a new model's probabilities mean something different.
+   threshold, because a new model's probabilities mean something different. Predictions are bit-for-bit
+   deterministic (scores are summed in sorted-label order, never dictionary order); otherwise an eval example
+   sitting exactly on the threshold could flip between local and escalated from one call to the next.
 4. **The gate checks every label, not the average.** A candidate is rejected if any label's recall falls by
    more than `maxRecallDrop`, even when overall accuracy rises. It is also rejected if accuracy falls, if local
    precision is under the floor, if it was scored on a different eval set (fingerprint mismatch), or if it is
@@ -170,7 +172,8 @@ Add it with Swift Package Manager:
 ## Verification
 
 - `swift build -Xswiftc -warnings-as-errors` from a clean `.build`: 0 warnings, 0 errors.
-- `swift test`: 105 XCTest tests, 0 failures. They include hand-computed Laplace probabilities, a golden
+- `swift test`: 106 XCTest tests, 0 failures. They include hand-computed Laplace probabilities, bit-for-bit deterministic
+  predictions across separately trained instances, a golden
   FNV-1a vector and a golden shadow-sample bucket, calibration tie handling and floors, every breaker
   transition, budget window roll-over and saturation, 40 overlapping escalations against a 10-call budget (the
   test asserts the calls really overlapped), cancellation through `ClaudeTeacher` with a URLSession-style
