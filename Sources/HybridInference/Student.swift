@@ -115,10 +115,14 @@ public struct NaiveBayesStudent: StudentModel {
     let vocabulary: Set<String>
     let alpha: Double
 
-    /// - Throws: `TrainingError` when smoothing is not a positive finite number, when no example has
+    /// - Throws: `TrainingError` when smoothing is not in `(0, maxAlpha]`, when no example has
     ///   any tokens, or when fewer than two distinct labels remain (a one-class router is pointless).
+    /// Upper bound on `alpha`. Far beyond any useful smoothing, and low enough that `alpha × vocabulary`
+    /// can never overflow to infinity and turn every probability into NaN.
+    public static let maxAlpha = 1e6
+
     public init(training examples: [LabeledExample], version: String, alpha: Double = 1.0) throws {
-        guard alpha.isFinite, alpha > 0 else { throw TrainingError.invalidSmoothing(alpha) }
+        guard alpha.isFinite, alpha > 0, alpha <= Self.maxAlpha else { throw TrainingError.invalidSmoothing(alpha) }
 
         var documents: [ClassLabel: Int] = [:]
         var counts: [ClassLabel: [String: Int]] = [:]

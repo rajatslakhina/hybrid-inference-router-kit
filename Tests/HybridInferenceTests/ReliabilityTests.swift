@@ -218,6 +218,9 @@ final class BoundedCollectionTests: XCTestCase {
         // Same salt, new instance: identical decisions. Different salt: a different sample.
         XCTAssertEqual(texts.filter { ShadowSampler(rate: 0.25, salt: "s").shouldSample($0) }, picked)
         XCTAssertNotEqual(texts.filter { ShadowSampler(rate: 0.25, salt: "t").shouldSample($0) }, picked)
+        // Golden value, computed independently from the FNV-1a definition. A process-seeded hash (`Hasher`)
+        // would agree with itself within this test run but fail this.
+        XCTAssertEqual(ShadowSampler(rate: 0.25, salt: "s").bucket(for: "ticket number 7"), 4_261)
         // Normalised text decides, so re-asking with different punctuation cannot farm extra samples.
         XCTAssertEqual(quarter.shouldSample("Ticket NUMBER 7!!"), quarter.shouldSample("ticket number 7"))
     }

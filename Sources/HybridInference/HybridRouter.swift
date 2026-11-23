@@ -246,11 +246,16 @@ public actor HybridRouter {
     ///
     /// Run it off the critical path (e.g. after a screen settles, or from a background task). It stops
     /// early, leaving work queued, when the budget would dip into `shadowHeadroomUnits` or the breaker
-    /// is not closed. Returns the number of teacher calls made.
+    /// is not closed. A half-open breaker's single probe is left for live traffic. Returns the number of
+    /// teacher calls made.
     @discardableResult
     public func drainShadowQueue(maxCalls: Int) async -> Int {
         var made = 0
         while made < maxCalls, let item = shadowQueue.popFirst() {
+            guard case .closed = breaker.state else {
+                shadowQueue.pushFront(item)
+                break
+            }
             let now = clock.now()
             guard let reservation = budget.reserve(units: price, now: now, headroom: shadowHeadroom) else {
                 shadowQueue.pushFront(item)
@@ -356,10 +361,10 @@ public actor HybridRouter {
             return .success(label)
         } catch is CancellationError {
             return .cancelled
-        } catch let error as TeacherError {
-            return .failure(error)
         } catch {
-            return .failure(.unavailable)
+            // Whatever the teacher threw, if *our* caller was cancelled this is a cancellation, not an outage.
+            if Task.isCancelled { return .cancelled }
+            return .failure(error as? TeacherError ?? .unavailable)
         }
     }
 

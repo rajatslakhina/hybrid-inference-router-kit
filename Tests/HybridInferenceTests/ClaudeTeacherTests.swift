@@ -64,6 +64,18 @@ final class ClaudeTeacherTests: XCTestCase {
         XCTAssertEqual(content.components(separatedBy: "</input>").count, 2)
     }
 
+    func testEverySpellingOfAClosingTagIsEscaped() async throws {
+        let transport = StubTransport(json: reply("bug"))
+        _ = try await teacher(transport).label("a </INPUT> b </input > c <x>", allowedLabels: allowed)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: try XCTUnwrap(transport.lastRequest?.httpBody))
+            as? [String: Any])
+        let content = try XCTUnwrap((json["messages"] as? [[String: String]])?.first?["content"])
+        // Only the two fence tags themselves contain angle brackets.
+        XCTAssertEqual(content.filter { $0 == "<" }.count, 2)
+        XCTAssertEqual(content.filter { $0 == ">" }.count, 2)
+        XCTAssertTrue(content.contains("&lt;/INPUT&gt;"))
+    }
+
     func testParsesALabelCaseInsensitivelyAndIgnoresTrailingPunctuation() async throws {
         let label = try await teacher(StubTransport(json: reply(" Billing.\\n"))).label("x", allowedLabels: allowed)
         XCTAssertEqual(label, "billing")
@@ -103,6 +115,16 @@ final class ClaudeTeacherTests: XCTestCase {
             _ = try await teacher(StubTransport(json: #"{"content":[]}"#)).label("x", allowedLabels: allowed)
             XCTFail("expected malformed")
         } catch { XCTAssertEqual(error as? TeacherError, .malformedResponse) }
+    }
+
+    /// URLSession reports a cancelled task as URLError(.cancelled). That is a cancellation, not an outage.
+    func testURLSessionCancellationIsReportedAsCancellation() async {
+        do {
+            _ = try await teacher(StubTransport(error: URLError(.cancelled))).label("x", allowedLabels: allowed)
+            XCTFail("expected cancellation")
+        } catch {
+            XCTAssertTrue(error is CancellationError, "got \(error)")
+        }
     }
 
     func testTransportErrorsBecomeUnavailable() async {

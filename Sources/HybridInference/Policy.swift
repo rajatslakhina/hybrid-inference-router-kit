@@ -34,6 +34,11 @@ public struct EscalationPolicy: Equatable, Sendable {
     /// `nil` means "answer locally".
     public func escalationReason(for prediction: StudentPrediction) -> EscalationReason? {
         guard prediction.tokenCount > 0, let top = prediction.distribution.top else { return .emptyInput }
+        // Every check below is a `<` comparison, and any comparison with NaN is false, so a NaN would
+        // read as "confident". A student that produces a non-finite number is never trusted.
+        guard top.probability.isFinite, prediction.distribution.margin.isFinite else {
+            return .lowConfidence(top.probability)
+        }
         if prediction.knownTokenFraction < minKnownTokenFraction {
             return .outOfDistribution(knownTokenFraction: prediction.knownTokenFraction)
         }
@@ -45,22 +50,38 @@ public struct EscalationPolicy: Equatable, Sendable {
     }
 }
 
-/// The confidence threshold chosen for one model version, and what it buys on the eval set.
+/// The confidence threshold chosen for one model version, and what it buys on the eval set under the
+/// full policy (threshold plus the margin and out-of-distribution floors it was calibrated with).
 public struct CalibrationResult: Equatable, Sendable {
     /// `nil` when no threshold reaches the target precision: escalate everything.
     public let threshold: Double?
-    /// Share of eval examples the student would answer locally at this threshold.
+    /// Share of eval examples the student would answer locally under the full policy.
     public let coverage: Double
     /// Accuracy on those locally answered examples. `nil` when coverage is zero.
     public let localPrecision: Double?
+    /// The floors the threshold was calibrated under.
+    public let minMargin: Double
+    public let minKnownTokenFraction: Double
 
-    /// The policy to install alongside the model. Margin and out-of-distribution floors are kept.
-    public func policy(minMargin: Double = 0, minKnownTokenFraction: Double = 0) -> EscalationPolicy {
+    public init(
+        threshold: Double?, coverage: Double, localPrecision: Double?,
+        minMargin: Double = 0, minKnownTokenFraction: Double = 0
+    ) {
+        self.threshold = threshold
+        self.coverage = coverage
+        self.localPrecision = localPrecision
+        self.minMargin = minMargin
+        self.minKnownTokenFraction = minKnownTokenFraction
+    }
+
+    /// The policy to install alongside the model. With no arguments it uses the floors the threshold was
+    /// calibrated under, which is the only combination `coverage` and `localPrecision` describe.
+    public func policy(minMargin: Double? = nil, minKnownTokenFraction: Double? = nil) -> EscalationPolicy {
         guard let threshold else { return .escalateAll }
         return EscalationPolicy(
             minConfidence: threshold,
-            minMargin: minMargin,
-            minKnownTokenFraction: minKnownTokenFraction
+            minMargin: minMargin ?? self.minMargin,
+            minKnownTokenFraction: minKnownTokenFraction ?? self.minKnownTokenFraction
         )
     }
 }
@@ -71,15 +92,29 @@ public struct CalibrationResult: Equatable, Sendable {
 /// Thresholds never carry over between model versions: a retrained model's probabilities mean
 /// something different, so each candidate is calibrated on its own before the promotion gate sees it.
 public enum ThresholdCalibrator {
+    /// - Parameters:
+    ///   - minMargin, minKnownTokenFraction: the policy's other floors. Examples that fail them are never
+    ///     answered locally whatever the threshold, so they count towards the denominator of `coverage`
+    ///     but can never be part of the local slice.
     public static func calibrate(
         model: any StudentModel,
         evalSet: EvalSet,
-        targetPrecision: Double
+        targetPrecision: Double,
+        minMargin: Double = 0,
+        minKnownTokenFraction: Double = 0
     ) -> CalibrationResult {
         let target = Saturating.unit(targetPrecision, nanValue: 1)
-        let scored: [(confidence: Double, correct: Bool)] = evalSet.examples.map { example in
-            let top = model.predict(example.text).distribution.top
-            return (top?.probability ?? 0, top?.label == example.label)
+        // Threshold 0 isolates the floors: this policy escalates only for margin, distribution or bad input.
+        let floors = EscalationPolicy(
+            minConfidence: 0, minMargin: minMargin, minKnownTokenFraction: minKnownTokenFraction
+        )
+        let total = evalSet.examples.count
+        let scored: [(confidence: Double, correct: Bool)] = evalSet.examples.compactMap { example in
+            let prediction = model.predict(example.text)
+            guard floors.escalationReason(for: prediction) == nil, let top = prediction.distribution.top else {
+                return nil
+            }
+            return (top.probability, top.label == example.label)
         }
         .sorted { $0.confidence > $1.confidence }
 
@@ -99,12 +134,17 @@ public enum ThresholdCalibrator {
 
         // A threshold of 1.0 would be read as "never trust" by the policy, so it cannot be used.
         guard let best, best.threshold < 1 else {
-            return CalibrationResult(threshold: nil, coverage: 0, localPrecision: nil)
+            return CalibrationResult(
+                threshold: nil, coverage: 0, localPrecision: nil,
+                minMargin: floors.minMargin, minKnownTokenFraction: floors.minKnownTokenFraction
+            )
         }
         return CalibrationResult(
             threshold: best.threshold,
-            coverage: Saturating.ratio(best.count, scored.count),
-            localPrecision: Saturating.ratio(best.correct, best.count)
+            coverage: Saturating.ratio(best.count, total),
+            localPrecision: Saturating.ratio(best.correct, best.count),
+            minMargin: floors.minMargin,
+            minKnownTokenFraction: floors.minKnownTokenFraction
         )
     }
 }

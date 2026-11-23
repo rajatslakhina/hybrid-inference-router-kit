@@ -220,7 +220,7 @@ private struct GateCard: View {
             }
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 4) {
                 GridRow {
-                    Text("Eval set").foregroundStyle(.secondary)
+                    Text("Metric").foregroundStyle(.secondary)
                     Text(record.incumbent?.modelVersion ?? "—").foregroundStyle(.secondary)
                     Text(record.candidate.modelVersion).foregroundStyle(.secondary)
                 }

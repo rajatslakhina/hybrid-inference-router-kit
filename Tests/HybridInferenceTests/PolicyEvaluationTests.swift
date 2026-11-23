@@ -37,6 +37,21 @@ final class EscalationPolicyTests: XCTestCase {
         XCTAssertNotNil(policy.escalationReason(for: prediction(0.99)))
     }
 
+    /// Comparisons with NaN are always false, so without the finiteness guard a NaN student reads as confident.
+    func testNonFinitePredictionIsNeverTrusted() {
+        let policy = EscalationPolicy(minConfidence: 0.5)
+        let nan = StudentPrediction(
+            modelVersion: "v", distribution: Distribution(probabilities: ["a": .nan, "b": .nan]),
+            tokenCount: 2, knownTokenCount: 2
+        )
+        guard case .lowConfidence? = policy.escalationReason(for: nan) else { return XCTFail("NaN must escalate") }
+        let infinite = StudentPrediction(
+            modelVersion: "v", distribution: Distribution(probabilities: ["a": .infinity]),
+            tokenCount: 2, knownTokenCount: 2
+        )
+        XCTAssertNotNil(policy.escalationReason(for: infinite))
+    }
+
     func testThresholdOfOneNeverTrustsEvenACertainStudent() {
         XCTAssertEqual(EscalationPolicy.escalateAll.escalationReason(for: prediction(1.0)), .lowConfidence(1.0))
     }
@@ -101,9 +116,28 @@ final class ThresholdCalibratorTests: XCTestCase {
 
     func testCalibratedPolicyKeepsMarginAndDistributionFloors() throws {
         let (student, eval) = try fixture([(0.9, true)])
-        let policy = ThresholdCalibrator.calibrate(model: student, evalSet: eval, targetPrecision: 1)
-            .policy(minMargin: 0.2, minKnownTokenFraction: 0.5)
-        XCTAssertEqual(policy, EscalationPolicy(minConfidence: 0.9, minMargin: 0.2, minKnownTokenFraction: 0.5))
+        let result = ThresholdCalibrator.calibrate(
+            model: student, evalSet: eval, targetPrecision: 1, minMargin: 0.2, minKnownTokenFraction: 0.5
+        )
+        XCTAssertEqual(result.policy(), EscalationPolicy(minConfidence: 0.9, minMargin: 0.2, minKnownTokenFraction: 0.5))
+        XCTAssertEqual(result.policy(minMargin: 0.3).minMargin, 0.3)
+    }
+
+    /// Floors are applied while calibrating: an example the margin floor would escalate anyway can never
+    /// be in the local slice, but it still counts in the coverage denominator.
+    func testCalibrationAppliesTheFloorsItWillShipWith() throws {
+        // item0: 0.95 correct (margin 0.9); item1: 0.55 wrong (margin 0.1); item2: 0.9 correct (margin 0.8).
+        let (student, eval) = try fixture([(0.95, true), (0.55, false), (0.9, true)])
+        let withoutFloor = ThresholdCalibrator.calibrate(model: student, evalSet: eval, targetPrecision: 0.6)
+        XCTAssertEqual(withoutFloor.threshold, 0.55)
+        XCTAssertEqual(withoutFloor.coverage, 1, accuracy: 1e-12)
+
+        let withFloor = ThresholdCalibrator.calibrate(model: student, evalSet: eval, targetPrecision: 1, minMargin: 0.5)
+        XCTAssertEqual(withFloor.threshold, 0.9)
+        XCTAssertEqual(withFloor.coverage, 2.0 / 3.0, accuracy: 1e-12)
+        XCTAssertEqual(withFloor.localPrecision, 1)
+        let report = Evaluator.evaluate(student, on: eval, policy: withFloor.policy())
+        XCTAssertEqual(report.localCoverage, withFloor.coverage, accuracy: 1e-12, "calibration must describe what ships")
     }
 }
 

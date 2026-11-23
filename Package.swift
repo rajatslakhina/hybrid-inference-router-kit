@@ -12,6 +12,6 @@ let package = Package(
     targets: [
         .target(name: "HybridInference"),
         .target(name: "HybridInferenceUI", dependencies: ["HybridInference"]),
-        .testTarget(name: "HybridInferenceTests", dependencies: ["HybridInference"]),
+        .testTarget(name: "HybridInferenceTests", dependencies: ["HybridInference", "HybridInferenceUI"]),
     ]
 )

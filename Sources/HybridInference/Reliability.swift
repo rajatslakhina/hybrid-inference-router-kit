@@ -289,7 +289,11 @@ struct ShadowSampler: Sendable {
     func shouldSample(_ text: String) -> Bool {
         guard rate > 0 else { return false }
         guard rate < 1 else { return true }
-        let bucket = StableHash.fnv1a64(salt + "\u{1F}" + Tokenizer.normalized(text)) % 10_000
-        return Double(bucket) < rate * 10_000
+        return Double(bucket(for: text)) < rate * 10_000
+    }
+
+    /// The input's fixed position in `0..<10_000`. Stable across processes and devices.
+    func bucket(for text: String) -> UInt64 {
+        StableHash.fnv1a64(salt + "\u{1F}" + Tokenizer.normalized(text)) % 10_000
     }
 }

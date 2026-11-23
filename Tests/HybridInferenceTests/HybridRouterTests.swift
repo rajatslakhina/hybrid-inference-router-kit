@@ -221,6 +221,50 @@ final class HybridRouterTests: XCTestCase {
         XCTAssertEqual(snapshot.breaker, .closed(consecutiveFailures: 0))
     }
 
+    /// The production path: `ClaudeTeacher` over a transport that, like URLSession, reports cancellation as
+    /// `URLError(.cancelled)`. Three cancelled users must not open a threshold-1 breaker.
+    func testCancellationThroughClaudeTeacherDoesNotTripTheBreaker() async {
+        let transport = SlowCancellableTransport()
+        let teacher = ClaudeTeacher(apiKey: "k", model: "m", transport: transport)
+        let router = HybridRouter(student: student(), teacher: teacher,
+                                  configuration: configuration(threshold: 1, timeout: .seconds(60)))
+        for expected in 1...3 {
+            let task = Task { await router.route("unsure") }
+            let arrived = await eventually { transport.started >= expected }
+            XCTAssertTrue(arrived)
+            task.cancel()
+            let answer = await task.value
+            XCTAssertEqual(answer.source, .studentFallback(.cancelled))
+        }
+        let snapshot = await router.snapshot()
+        XCTAssertEqual(snapshot.breaker, .closed(consecutiveFailures: 0))
+        XCTAssertEqual(snapshot.spentUnits, 0)
+    }
+
+    /// Budget is checked before the breaker. After the cool-down, a request the budget refuses must not
+    /// move the breaker to half-open; the probe stays available for a request that can pay for it.
+    func testABudgetRefusalLeavesTheBreakersProbeUntouched() async {
+        let clock = ManualClock()
+        let teacher = ProgrammableTeacher(defaultResult: .failure(.unavailable))
+        let router = HybridRouter(student: student(), teacher: teacher,
+                                  configuration: configuration(capacity: 3, threshold: 1, cooldown: 10), clock: clock)
+        _ = await router.route("unsure")
+        var snapshot = await router.snapshot()
+        XCTAssertEqual(snapshot.breaker, .open)
+
+        clock.advance(10)
+        await router.reprice(unitsPerCall: 5)
+        let refused = await router.route("unsure")
+        XCTAssertEqual(refused.source, .studentFallback(.budgetExhausted))
+        snapshot = await router.snapshot()
+        XCTAssertEqual(snapshot.breaker, .open, "a refused budget must not consume or reveal the probe")
+
+        await router.reprice(unitsPerCall: 1)
+        await teacher.setDefault(.success("bug"))
+        let probe = await router.route("unsure")
+        XCTAssertEqual(probe.source, .teacher(modelID: "teacher-a"))
+    }
+
     // MARK: Model swaps
 
     func testInFlightRequestFinishesOnTheModelItStartedWith() async {
@@ -280,6 +324,25 @@ final class HybridRouterTests: XCTestCase {
         XCTAssertEqual(made, 1)
         XCTAssertEqual(snapshot.breaker, .open)
         XCTAssertEqual(snapshot.shadowQueued, 2)
+    }
+
+    func testShadowDrainLeavesTheHalfOpenProbeForLiveTraffic() async {
+        let clock = ManualClock()
+        let teacher = ProgrammableTeacher(script: [.failure(.unavailable)], defaultResult: .success("billing"))
+        let router = HybridRouter(student: student(), teacher: teacher,
+                                  configuration: configuration(threshold: 1, cooldown: 10, shadowRate: 1), clock: clock)
+        _ = await router.route("unsure")          // fails: breaker opens
+        _ = await router.route("one")             // confident: queued for shadow
+        clock.advance(10)                         // cool-down over: next acquire would be the probe
+        let made = await router.drainShadowQueue(maxCalls: 5)
+        XCTAssertEqual(made, 0)
+        var snapshot = await router.snapshot()
+        XCTAssertEqual(snapshot.shadowQueued, 1)
+        XCTAssertEqual(snapshot.breaker, .open)
+        let live = await router.route("unsure")
+        XCTAssertEqual(live.source, .teacher(modelID: "teacher-a"))
+        snapshot = await router.snapshot()
+        XCTAssertEqual(snapshot.breaker, .closed(consecutiveFailures: 0))
     }
 
     func testSnapshotEscalationRateAndCounterReset() async {

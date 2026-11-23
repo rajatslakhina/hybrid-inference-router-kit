@@ -9,6 +9,7 @@ not actually guarding the property, and the script exits non-zero.
 Run from the package root:  python3 Scripts/mutation_check.py
 """
 import pathlib
+import re
 import subprocess
 import sys
 
@@ -78,6 +79,44 @@ MUTANTS = [
         "if false && before - after > maxRecallDrop + Self.epsilon {",
         "TeacherStudentLoopTests/testGateRejectsAStudentTrainedOnDriftedTeacherLabels",
     ),
+    (
+        "breaker-checked-before-budget",
+        SRC / "HybridRouter.swift",
+        """        guard let reservation = budget.reserve(units: price, now: now) else { return fallback(.budgetExhausted) }
+        guard let permit = breaker.acquire(now: now) else {
+            budget.refund(reservation)
+            return fallback(breaker.status == .retired ? .teacherRetired : .circuitOpen)
+        }""",
+        """        guard let permit = breaker.acquire(now: now) else {
+            return fallback(breaker.status == .retired ? .teacherRetired : .circuitOpen)
+        }
+        guard let reservation = budget.reserve(units: price, now: now) else {
+            breaker.release(permit)
+            return fallback(.budgetExhausted)
+        }""",
+        "HybridRouterTests/testABudgetRefusalLeavesTheBreakersProbeUntouched",
+    ),
+    (
+        "shadow-drain-takes-the-half-open-probe",
+        SRC / "HybridRouter.swift",
+        """            guard case .closed = breaker.state else {
+                shadowQueue.pushFront(item)
+                break
+            }
+""",
+        "",
+        "HybridRouterTests/testShadowDrainLeavesTheHalfOpenProbeForLiveTraffic",
+    ),
+    (
+        "policy-trusts-non-finite-confidence",
+        SRC / "Policy.swift",
+        """        guard top.probability.isFinite, prediction.distribution.margin.isFinite else {
+            return .lowConfidence(top.probability)
+        }
+""",
+        "",
+        "EscalationPolicyTests/testNonFinitePredictionIsNeverTrusted",
+    ),
 ]
 
 
@@ -99,7 +138,14 @@ def main() -> int:
                 broken.append(f"{name}: mutant does not compile\n{build.stdout[-2000:]}{build.stderr[-2000:]}")
                 continue
             result = run("swift", "test", "--skip-build", "--filter", test)
-            caught = result.returncode != 0
+            # A kill needs evidence: the filter matched at least one test and at least one test failed.
+            # A typo in the filter, or a crash before any test ran, is reported as invalid, not as a kill.
+            counts = re.findall(r"Executed (\d+) tests?, with (\d+) failures?", result.stdout + result.stderr)
+            if not counts or int(counts[-1][0]) == 0:
+                broken.append(f"{name}: filter {test!r} ran no tests")
+                print("INVALID  " + name, flush=True)
+                continue
+            caught = int(counts[-1][1]) > 0
             (killed if caught else survivors).append(f"{name} -> {test}")
             print(("KILLED   " if caught else "SURVIVED ") + name, flush=True)
         finally:

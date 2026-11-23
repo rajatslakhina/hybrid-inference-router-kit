@@ -118,23 +118,28 @@ public final class HybridInferenceLab {
 
     // MARK: Actions
 
-    /// Trains student v1 on the seed set, calibrates it, and starts the router.
+    /// Trains student v1 on the seed set, calibrates it, and starts a fresh router with a healthy teacher
+    /// at the base price.
     public func prepare() async {
         await perform { [self] in
+            teacher = ScriptedTeacher(
+                modelID: scenario.teacherModelID,
+                rules: scenario.teacherRules,
+                fallbackLabel: scenario.teacherFallback
+            )
+            teacherGeneration = 1
+            studentGeneration = 0
+            teacherMode = .healthy
+            priceRaised = false
             let model = try NaiveBayesStudent(training: scenario.seed, version: nextStudentVersion())
-            let calibration = ThresholdCalibrator.calibrate(
-                model: model, evalSet: scenario.evalSet, targetPrecision: scenario.targetPrecision
-            )
-            let policy = calibration.policy(
-                minMargin: scenario.configuration.policy.minMargin,
-                minKnownTokenFraction: scenario.configuration.policy.minKnownTokenFraction
-            )
+            let calibration = calibrate(model)
+            let policy = calibration.policy()
             let router = HybridRouter(student: model, teacher: teacher, configuration: scenario.configuration)
             await router.install(model, policy: policy)
             self.router = router
             incumbent = Evaluator.evaluate(model, on: scenario.evalSet, policy: policy)
             activeThreshold = calibration.threshold
-            studentGeneration += 1
+            studentGeneration = Self.bumped(studentGeneration)
             recent = []
             lastGate = nil
             runs = 0
@@ -165,7 +170,7 @@ public final class HybridInferenceLab {
                 if recent.count > Self.recentLimit { recent.removeLast(recent.count - Self.recentLimit) }
             }
             await router.drainShadowQueue(maxCalls: scenario.shadowCallsPerRun)
-            runs = runs < Int.max ? runs + 1 : 0   // never wraps negative, so `runs % count` stays a valid index
+            runs = Self.bumped(runs)   // never wraps negative, so `runs % count` stays a valid index
             snapshot = await router.snapshot()
         }
     }
@@ -183,13 +188,8 @@ public final class HybridInferenceLab {
                 seed: scenario.seed, harvested: harvested, excluding: scenario.evalSet
             )
             let candidate = try NaiveBayesStudent(training: training.examples, version: nextStudentVersion())
-            let calibration = ThresholdCalibrator.calibrate(
-                model: candidate, evalSet: scenario.evalSet, targetPrecision: scenario.targetPrecision
-            )
-            let policy = calibration.policy(
-                minMargin: scenario.configuration.policy.minMargin,
-                minKnownTokenFraction: scenario.configuration.policy.minKnownTokenFraction
-            )
+            let calibration = calibrate(candidate)
+            let policy = calibration.policy()
             let report = Evaluator.evaluate(candidate, on: scenario.evalSet, policy: policy)
             let decision = scenario.gate.decide(candidate: report, incumbent: incumbent)
             lastGate = GateRecord(
@@ -197,7 +197,7 @@ public final class HybridInferenceLab {
                 candidateThreshold: calibration.threshold, trainingCount: training.examples.count,
                 leakExcluded: training.excludedForLeak, drifted: drifted
             )
-            studentGeneration += 1
+            studentGeneration = Self.bumped(studentGeneration)
             if decision.isPromotion {
                 await router.install(candidate, policy: policy)
                 incumbent = report
@@ -212,7 +212,7 @@ public final class HybridInferenceLab {
             guard let router, mode != teacherMode else { return }
             if teacherMode == .retired {
                 // A retired model never comes back: migrate to a successor model, which resets the breaker.
-                teacherGeneration += 1
+                teacherGeneration = Self.bumped(teacherGeneration)
                 teacher = ScriptedTeacher(
                     modelID: "\(scenario.teacherModelID)-successor-\(teacherGeneration)",
                     rules: scenario.teacherRules,
@@ -260,7 +260,18 @@ public final class HybridInferenceLab {
 
     // MARK: Helpers
 
-    private func nextStudentVersion() -> String { "student-v\(studentGeneration + 1)" }
+    private func nextStudentVersion() -> String { "student-v\(Self.bumped(studentGeneration))" }
+
+    /// Calibrates under the scenario's full policy, so the reported coverage is what will actually ship.
+    private func calibrate(_ model: any StudentModel) -> CalibrationResult {
+        ThresholdCalibrator.calibrate(
+            model: model,
+            evalSet: scenario.evalSet,
+            targetPrecision: scenario.targetPrecision,
+            minMargin: scenario.configuration.policy.minMargin,
+            minKnownTokenFraction: scenario.configuration.policy.minKnownTokenFraction
+        )
+    }
 
     private func perform(_ work: @MainActor () async throws -> Void) async {
         guard !isBusy else { return }
@@ -273,6 +284,9 @@ public final class HybridInferenceLab {
             errorMessage = String(describing: error)
         }
     }
+
+    /// `value + 1`, saturating at `Int.max` instead of trapping.
+    static func bumped(_ value: Int) -> Int { value < Int.max ? value + 1 : value }
 
     static func rotateLabels(_ examples: [LabeledExample]) -> [LabeledExample] {
         let labels = Array(Set(examples.map(\.label))).sorted()

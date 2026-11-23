@@ -122,6 +122,24 @@ actor GatedTeacher: TeacherProvider {
     }
 }
 
+/// Behaves like URLSession on cancellation: waits until cancelled, then throws URLError(.cancelled).
+final class SlowCancellableTransport: HTTPTransport, @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    var started: Int { lock.withLock { count } }
+
+    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        lock.withLock { count += 1 }
+        do {
+            try await Task.sleep(for: .seconds(60))
+        } catch {
+            throw URLError(.cancelled)
+        }
+        throw URLError(.timedOut)
+    }
+}
+
 /// Polls `condition` for up to ~2 s. Used only to wait for a gated call to *arrive*, never to sleep
 /// past a race.
 func eventually(_ condition: @Sendable () async -> Bool) async -> Bool {

@@ -89,7 +89,9 @@ version-pinned remote package.
    cannot retire its successor. *Rejected:* a timestamp check, which is ambiguous at equal times and with an
    injected clock.
 3. **Thresholds are calibrated, never configured.** `ThresholdCalibrator` picks the lowest confidence whose
-   locally answered slice of the eval set meets a precision target. It never cuts inside a tie, because the
+   locally answered slice of the eval set meets a precision target, under the same margin and
+   out-of-distribution floors the policy will ship with, so the coverage it reports is the coverage you get.
+   A non-finite probability (NaN or infinity) is never trusted. It never cuts inside a tie, because the
    policy answers locally at `>=` and a tied wrong answer would be hidden. Each retrained model gets its own
    threshold, because a new model's probabilities mean something different.
 4. **The gate checks every label, not the average.** A candidate is rejected if any label's recall falls by
@@ -116,13 +118,15 @@ version-pinned remote package.
 | --- | --- | --- | --- |
 | Provider outage / 5xx / network error | student answer, `teacherFailed` | refunded | counts a failure |
 | HTTP 429 | student answer, `teacherFailed` | refunded | counts a failure |
+| Other 4xx (bad key, bad request) | student answer, `teacherFailed` (`.rejectedRequest`) | refunded | counts a failure |
 | Teacher exceeds `teacherTimeout` | student answer, `teacherFailed` (`.timedOut`) | charged (conservative) | counts a failure |
 | Model retired (HTTP 404) | student answer, `teacherRetired`, until `replaceTeacher` | refunded | retired |
 | Refusal | student answer, `teacherRefused` | charged | healthy |
 | Off-list label | student answer, `offListLabel`; not harvested | charged | healthy |
 | Budget spent for the window | student answer, `budgetExhausted`; teacher not called | — | untouched |
 | Breaker open | student answer, `circuitOpen`; teacher not called | refunded | — |
-| Caller cancelled | student answer, `cancelled` | refunded | untouched |
+| Caller cancelled (including `URLError(.cancelled)` from `URLSession`) | student answer, `cancelled` | refunded | untouched |
+| Blank or punctuation-only input | escalates as `.emptyInput` and is billed, but never harvested | charged | as for the call |
 | Price raised (`reprice`) | fewer escalations fit the same cap | new price applies to new reservations | — |
 | Teacher labels drift | a retrain on them is rejected by `PromotionGate` | — | — |
 
@@ -165,18 +169,22 @@ Add it with Swift Package Manager:
 ## Verification
 
 - `swift build -Xswiftc -warnings-as-errors` from a clean `.build`: 0 warnings, 0 errors.
-- `swift test`: 83 XCTest tests, 0 failures. They include hand-computed Laplace probabilities, calibration tie
-  handling, every breaker transition, budget window roll-over and saturation, 40 overlapping escalations
-  against a 10-call budget (the test asserts the calls really overlapped), cancellation, timeout, teacher
-  replacement during an in-flight call, a stubbed-transport suite for `ClaudeTeacher`, and the end-to-end loop
-  measured on day-two tickets that neither student trained on.
-- `python3 Scripts/mutation_check.py`: 9 mutants, each a one-line edit that removes a guard (in-flight
+- `swift test`: 97 XCTest tests, 0 failures. They include hand-computed Laplace probabilities, a golden
+  FNV-1a vector and a golden shadow-sample bucket, calibration tie handling and floors, every breaker
+  transition, budget window roll-over and saturation, 40 overlapping escalations against a 10-call budget (the
+  test asserts the calls really overlapped), cancellation through `ClaudeTeacher` with a URLSession-style
+  transport, timeout, teacher replacement during an in-flight call, a stubbed-transport suite for
+  `ClaudeTeacher`, and the end-to-end loop measured on day-two tickets that neither student trained on.
+  `LabStageTests` drives `HybridInferenceLab` with the demo app's exact scenario and asserts the numbers shown
+  in its screenshots.
+- `python3 Scripts/mutation_check.py`: 12 mutants. Each one removes or reorders one guard: in-flight
   reservations, tie handling, stale breaker results ×2, retirement generation, the off-list label check,
-  cancellation accounting, the eval leak guard, per-label recall in the gate). Each one is caught by the test
-  named in the script.
+  cancellation accounting, the eval leak guard, per-label recall in the gate, budget-before-breaker order,
+  the shadow drain taking the half-open probe, and the non-finite confidence check. A mutant counts as
+  killed only if its named test ran and failed.
 - CI ([Actions](https://github.com/rajatslakhina/hybrid-inference-router-kit/actions)) runs three `macos-15`
-  jobs on every push: build and test with warnings as errors, an iOS Simulator build of both library targets,
-  and the mutation check.
+  jobs on pushes to `main`, on `v*` tags and on pull requests: build and test with warnings as errors, an iOS
+  Simulator build of both library targets, and the mutation check.
 - The demo app was run on an iOS Simulator; see the demo repository for what was run and the screenshots.
 
 ## Honest limits
@@ -184,20 +192,29 @@ Add it with Swift Package Manager:
 - **Toy data.** The tests and the demo use a 4-label support-ticket set: 8 seed examples, a 12-example eval set,
   and two disjoint 40- and 20-ticket days. With 3 eval examples per label, one example moves a label's recall by
   33 points, so the gate's numbers here show the mechanism, not production statistics.
+- **The demo's eval result is partly circular.** The scripted teacher's keyword rules agree with every eval
+  label, and v2 is trained on that teacher's labels, so v2's 100% eval score is partly built in. With a real
+  teacher, the eval set must be labelled independently of it.
 - **Naive Bayes is a stand-in.** It is over-confident and blind to word order. Production should use a Core ML
   classifier behind `StudentModel`, trained off device.
 - **`ClaudeTeacher` is tested against a stubbed transport only.** No live API call is made by the tests or the
   demo. The 404 → retired and 5xx → unavailable mappings are reasonable defaults, not a contract with any provider.
+  Any 404 is treated as a permanent retirement, including a wrong proxy path, until `replaceTeacher` is called.
 - **The timeout relies on cancellation.** A task group waits for its children, so a teacher that ignores
   cancellation delays the fallback until it returns. `URLSession` and `Task.sleep` honour cancellation.
 - **The budget is a fixed window.** Up to twice the capacity can be spent across a window boundary (the end of
   one window plus the start of the next). It lives in memory, so a relaunch starts a new window. Enforce the
   real spend limit on your server as well.
+- **Nothing is persisted.** The harvest, the breaker and the budget live in memory, so the data loop closes
+  only within one process. Production needs a durable, consented store for harvested examples.
+- **No response cache, and blank input is billed.** Asking the same uncertain question twice escalates twice.
+  Blank or punctuation-only input escalates (as `.emptyInput`) and is charged, although there is nothing to
+  label. Short-circuit both before `route` if they matter to you.
 - **Billing assumptions are conservative estimates.** They are not provider billing rules. Real cost should come
   from the usage the provider reports.
-- **Prompt injection is reduced, not removed.** The input is fenced and the label list is enforced, but a
-  crafted ticket can still steer Claude towards a different *allowed* label. The promotion gate catches it only
-  if the eval set covers the case.
+- **Prompt injection is reduced, not removed.** The input is fenced (every `<` and `>` in it is escaped) and the
+  label list is enforced, but a crafted ticket can still steer Claude towards a different *allowed* label.
+  The promotion gate catches it only if the eval set covers the case.
 - **Privacy is out of scope.** Escalation sends user text to a third party, and harvesting stores it for training.
   Shipping this needs consent, redaction and a retention policy, none of which this package implements.
 - **The teacher is treated as ground truth.** Teacher mistakes become training data. The gate limits the damage

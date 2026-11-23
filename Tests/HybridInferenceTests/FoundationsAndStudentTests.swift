@@ -42,6 +42,9 @@ final class NaiveBayesStudentTests: XCTestCase {
             XCTAssertEqual($0 as? TrainingError, .invalidSmoothing(0))
         }
         XCTAssertThrowsError(try NaiveBayesStudent(training: Tickets.seed, version: "v", alpha: .nan))
+        // Huge but finite alpha would overflow alpha × vocabulary to infinity and make every probability NaN.
+        XCTAssertThrowsError(try NaiveBayesStudent(training: Tickets.seed, version: "v", alpha: 1e308))
+        XCTAssertNoThrow(try NaiveBayesStudent(training: Tickets.seed, version: "v", alpha: NaiveBayesStudent.maxAlpha))
     }
 
     func testTrainingRejectsEmptyAndTokenlessInput() {
