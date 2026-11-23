@@ -57,6 +57,8 @@ final class LabStageTests: XCTestCase {
         XCTAssertEqual(state.answeredByTeacher, 40)
         XCTAssertEqual(state.spentUnits, 40)
         XCTAssertEqual(state.harvested, 40)
+        XCTAssertEqual(state.fallbackCount, 0)
+        XCTAssertEqual(state.breaker, .closed(consecutiveFailures: 0))
         XCTAssertEqual(lab.nextBatchNumber, 2)
     }
 
@@ -68,8 +70,12 @@ final class LabStageTests: XCTestCase {
         XCTAssertEqual(gate.trainingCount, 48)
         XCTAssertEqual(gate.leakExcluded, 0)
         XCTAssertEqual(gate.incumbent?.accuracy ?? 0, 5.0 / 12.0, accuracy: 1e-12)
+        XCTAssertEqual(gate.incumbent?.localCoverage, 0)
+        XCTAssertNil(gate.incumbent?.localPrecision)
         XCTAssertEqual(gate.candidate.accuracy, 1)
         XCTAssertEqual(gate.candidate.localCoverage, 1)
+        XCTAssertEqual(gate.candidate.localPrecision, 1)
+        XCTAssertEqual(gate.candidate.exampleCount, 12)
         XCTAssertEqual(lab.activeThreshold ?? 0, 0.594, accuracy: 0.001)
 
         let state = try snapshot(lab)
@@ -78,9 +84,13 @@ final class LabStageTests: XCTestCase {
         XCTAssertEqual(state.answeredByStudent, 16)
         XCTAssertEqual(state.answeredByTeacher, 4)
         XCTAssertEqual(state.fallbackCount, 0)
-        // Five of the sixteen local answers fall in the shadow sample; all five fit above the headroom.
-        XCTAssertEqual(state.shadowAgreements + state.shadowDisagreements, 5)
+        // Five of the sixteen local answers fall in the shadow sample; all five fit above the headroom,
+        // and the teacher agrees with all five.
+        XCTAssertEqual(state.shadowAgreements, 5)
+        XCTAssertEqual(state.shadowDisagreements, 0)
         XCTAssertEqual(state.spentUnits, 40 + 4 + 5)
+        XCTAssertEqual(state.harvested, 49)
+        XCTAssertEqual(state.breaker, .closed(consecutiveFailures: 0))
     }
 
     func testDriftedRetrainIsRejectedAndV1StaysInstalled() async throws {
@@ -88,10 +98,19 @@ final class LabStageTests: XCTestCase {
         await lab.run(to: .drifted)
         let gate = try XCTUnwrap(lab.lastGate)
         XCTAssertTrue(gate.drifted)
-        guard case .reject(let failures) = gate.decision else { return XCTFail("drifted retrain must be rejected") }
-        XCTAssertTrue(failures.contains(.recallRegressed(label: "account", from: 1, to: 0)))
-        XCTAssertTrue(failures.contains(.accuracyRegressed(from: 5.0 / 12.0, to: 0)))
-        XCTAssertEqual(try snapshot(lab).modelVersion, "student-v1")
+        XCTAssertEqual(gate.decision, .reject([
+            .localPrecisionBelowFloor(value: nil, floor: 0.9),
+            .accuracyRegressed(from: 5.0 / 12.0, to: 0),
+            .recallRegressed(label: "account", from: 1, to: 0),
+            .recallRegressed(label: "billing", from: 2.0 / 3.0, to: 0),
+            .noImprovement,
+        ]))
+        XCTAssertEqual(gate.candidate.localCoverage, 0)
+        let state = try snapshot(lab)
+        XCTAssertEqual(state.modelVersion, "student-v1")
+        XCTAssertEqual(state.requests, 40)
+        XCTAssertEqual(state.answeredByTeacher, 40)
+        XCTAssertEqual(state.spentUnits, 40)
     }
 
     func testOutageOpensTheBreakerWhileTheStudentServes() async throws {
@@ -105,6 +124,8 @@ final class LabStageTests: XCTestCase {
         XCTAssertEqual(state.fallbacks[.circuitOpen], 1)
         XCTAssertEqual(state.shadowAgreements + state.shadowDisagreements, 0, "no shadow calls while the breaker is open")
         XCTAssertEqual(state.spentUnits, 40, "failed calls are refunded")
+        XCTAssertEqual(state.answeredByTeacher, 0)
+        XCTAssertEqual(state.harvested, 40)
     }
 
     func testRetiredTeacherFallsBackThenMigratesToASuccessor() async throws {

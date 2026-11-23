@@ -117,6 +117,13 @@ MUTANTS = [
         "",
         "EscalationPolicyTests/testNonFinitePredictionIsNeverTrusted",
     ),
+    (
+        "router-ignores-its-callers-cancellation",
+        SRC / "HybridRouter.swift",
+        "            if Task.isCancelled { return .cancelled }\n",
+        "",
+        "HybridRouterTests/testRouterTreatsAnyErrorAfterItsCallerWasCancelledAsCancellation",
+    ),
 ]
 
 

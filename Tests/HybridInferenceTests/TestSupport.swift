@@ -140,6 +140,22 @@ final class SlowCancellableTransport: HTTPTransport, @unchecked Sendable {
     }
 }
 
+/// Waits until cancelled, then throws an ordinary `TeacherError.unavailable` instead of `CancellationError`.
+actor UnavailableOnCancelTeacher: TeacherProvider {
+    nonisolated let modelID = "unavailable-on-cancel"
+    private(set) var calls = 0
+
+    func label(_ text: String, allowedLabels: [ClassLabel]) async throws -> ClassLabel {
+        calls += 1
+        do {
+            try await Task.sleep(for: .seconds(60))
+        } catch {
+            throw TeacherError.unavailable
+        }
+        return "billing"
+    }
+}
+
 /// Polls `condition` for up to ~2 s. Used only to wait for a gated call to *arrive*, never to sleep
 /// past a race.
 func eventually(_ condition: @Sendable () async -> Bool) async -> Bool {

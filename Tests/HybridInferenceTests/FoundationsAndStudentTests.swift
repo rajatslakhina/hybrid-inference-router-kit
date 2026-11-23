@@ -93,6 +93,15 @@ final class NaiveBayesStudentTests: XCTestCase {
         XCTAssertEqual(prediction.distribution.top?.probability ?? 0, 0.75, accuracy: 1e-12)
     }
 
+    /// With the smallest subnormal alpha, (0 + alpha) / denominator underflows to 0 and log(0) = -inf
+    /// for every label on a mixed input; computing the logs separately keeps everything finite.
+    func testTinySmoothingStillGivesFiniteNormalisedProbabilities() throws {
+        let model = try NaiveBayesStudent(training: Tickets.seed, version: "v", alpha: 5e-324)
+        let prediction = model.predict("refund crashes password")
+        for entry in prediction.distribution.ranked { XCTAssertTrue(entry.probability.isFinite) }
+        XCTAssertEqual(prediction.distribution.ranked.reduce(0) { $0 + $1.probability }, 1, accuracy: 1e-9)
+    }
+
     func testEmptyInputHasZeroTokensAndProbabilitiesStillSumToOne() throws {
         let model = try NaiveBayesStudent(training: Tickets.seed, version: "v")
         let prediction = model.predict("")

@@ -115,12 +115,12 @@ public struct NaiveBayesStudent: StudentModel {
     let vocabulary: Set<String>
     let alpha: Double
 
-    /// - Throws: `TrainingError` when smoothing is not in `(0, maxAlpha]`, when no example has
-    ///   any tokens, or when fewer than two distinct labels remain (a one-class router is pointless).
     /// Upper bound on `alpha`. Far beyond any useful smoothing, and low enough that `alpha × vocabulary`
     /// can never overflow to infinity and turn every probability into NaN.
     public static let maxAlpha = 1e6
 
+    /// - Throws: `TrainingError` when smoothing is not in `(0, maxAlpha]`, when no example has
+    ///   any tokens, or when fewer than two distinct labels remain (a one-class router is pointless).
     public init(training examples: [LabeledExample], version: String, alpha: Double = 1.0) throws {
         guard alpha.isFinite, alpha > 0, alpha <= Self.maxAlpha else { throw TrainingError.invalidSmoothing(alpha) }
 
@@ -173,11 +173,13 @@ public struct NaiveBayesStudent: StudentModel {
 
         var logScores: [ClassLabel: Double] = [:]
         for (label, labelStats) in stats {
-            // alpha > 0 and vocabularySize >= 1, so the denominator is strictly positive.
-            let denominator = Double(labelStats.totalTokens) + alpha * vocabularySize
+            // alpha > 0 and vocabularySize >= 1, so the denominator is strictly positive. The log of the
+            // numerator and denominator are taken separately: for a tiny alpha (down to the smallest
+            // subnormal) the ratio would underflow to 0 and log(0) = -inf would turn the softmax into NaN.
+            let logDenominator = log(Double(labelStats.totalTokens) + alpha * vocabularySize)
             var score = labelStats.logPrior
             for token in known {
-                score += log((Double(labelStats.tokenCounts[token, default: 0]) + alpha) / denominator)
+                score += log(Double(labelStats.tokenCounts[token, default: 0]) + alpha) - logDenominator
             }
             logScores[label] = score
         }

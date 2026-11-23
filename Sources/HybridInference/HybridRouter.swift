@@ -36,7 +36,8 @@ public struct RouterConfiguration: Sendable {
         self.budget = budget
         self.pricePerCallUnits = max(pricePerCallUnits, 0)
         self.breaker = breaker
-        self.teacherTimeout = teacherTimeout
+        // A zero or negative timeout would time out (and bill, and count as an outage) every escalation.
+        self.teacherTimeout = teacherTimeout > .zero ? teacherTimeout : .seconds(8)
         self.shadowSampleRate = shadowSampleRate
         self.shadowSalt = shadowSalt
         self.shadowQueueCapacity = max(shadowQueueCapacity, 0)
@@ -386,23 +387,41 @@ public actor HybridRouter {
     }
 }
 
+private enum TimeoutRace<Value: Sendable>: Sendable {
+    case value(Value)
+    case timerFired
+    case timerCancelled
+}
+
 /// Runs `operation`, or throws `TeacherError.timedOut` once `timeout` elapses.
 ///
-/// Implemented with a task group and cancellation. Limit: a task group always waits for its children,
-/// so the timeout only bounds latency for operations that honour cancellation (`URLSession` and
-/// `Task.sleep` do). An operation that ignores cancellation delays the timeout until it returns.
+/// Implemented with a task group and cancellation. If the *caller* is cancelled, the timer child stands
+/// down quietly and the operation's own outcome is what surfaces, so the router always sees what the
+/// teacher actually did. Limit: a task group always waits for its children, so the timeout only bounds
+/// latency for operations that honour cancellation (`URLSession` and `Task.sleep` do). An operation that
+/// ignores cancellation delays the timeout until it returns.
 func withTimeout<T: Sendable>(
     _ timeout: Duration,
     operation: @escaping @Sendable () async throws -> T
 ) async throws -> T {
-    try await withThrowingTaskGroup(of: T.self) { group in
-        group.addTask { try await operation() }
+    try await withThrowingTaskGroup(of: TimeoutRace<T>.self) { group in
+        group.addTask { .value(try await operation()) }
         group.addTask {
-            try await Task.sleep(for: timeout)
-            throw TeacherError.timedOut
+            do {
+                try await Task.sleep(for: timeout)
+                return .timerFired
+            } catch {
+                return .timerCancelled
+            }
         }
         defer { group.cancelAll() }
-        guard let first = try await group.next() else { throw TeacherError.unavailable }
-        return first
+        while let next = try await group.next() {
+            switch next {
+            case .value(let value): return value
+            case .timerFired: throw TeacherError.timedOut
+            case .timerCancelled: continue
+            }
+        }
+        throw TeacherError.unavailable
     }
 }

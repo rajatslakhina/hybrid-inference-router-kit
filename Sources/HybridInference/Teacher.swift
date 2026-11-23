@@ -14,7 +14,9 @@ public enum TeacherError: Error, Equatable, Sendable {
     case refused
     /// The provider no longer serves this model (deprecated or retired).
     case modelRetired
-    /// Any other 4xx: bad key, bad request. A configuration problem, not an outage.
+    /// Any other 4xx. 401, 403 and 407 (credentials, permissions, proxy auth) affect every request, so they
+    /// count as an outage and stop the app hammering the API with a bad key. Other 4xx (400, 413, 422, …)
+    /// are usually caused by one input and must not open the breaker for everyone.
     case rejectedRequest(status: Int)
     /// A 2xx whose body could not be read.
     case malformedResponse
@@ -33,7 +35,8 @@ public enum TeacherError: Error, Equatable, Sendable {
     /// means the service is up, so they do not.
     public var countsAsOutage: Bool {
         switch self {
-        case .unavailable, .rateLimited, .timedOut, .rejectedRequest: return true
+        case .unavailable, .rateLimited, .timedOut: return true
+        case .rejectedRequest(let status): return [401, 403, 407].contains(status)
         case .refused, .malformedResponse, .modelRetired: return false
         }
     }
@@ -142,6 +145,9 @@ public struct ClaudeTeacher: TeacherProvider {
     let endpoint: URL
     let transport: any HTTPTransport
     let maxTokens: Int
+    /// Longer inputs are truncated to this many characters before they are sent, so one huge ticket cannot
+    /// cost hundreds of times a normal one while the budget still counts it as one call.
+    let maxInputCharacters: Int
 
     /// - Parameter model: the Claude model ID to call. Required: model names change, so there is no default.
     public init(
@@ -149,13 +155,15 @@ public struct ClaudeTeacher: TeacherProvider {
         model: String,
         endpoint: URL = ClaudeTeacher.defaultEndpoint,
         transport: any HTTPTransport = URLSessionTransport(),
-        maxTokens: Int = 16
+        maxTokens: Int = 16,
+        maxInputCharacters: Int = 4_000
     ) {
         self.apiKey = apiKey
         self.modelID = model
         self.endpoint = endpoint
         self.transport = transport
         self.maxTokens = min(max(maxTokens, 1), 1024)
+        self.maxInputCharacters = max(maxInputCharacters, 1)
     }
 
     struct RequestBody: Encodable, Equatable {
@@ -196,7 +204,7 @@ public struct ClaudeTeacher: TeacherProvider {
         """
         // Escape every angle bracket, so no spelling of a closing tag ("</INPUT>", "</input >") can end
         // the fence early.
-        let fenced = text
+        let fenced = String(text.prefix(maxInputCharacters))
             .replacingOccurrences(of: "<", with: "&lt;")
             .replacingOccurrences(of: ">", with: "&gt;")
         return RequestBody(
@@ -255,15 +263,25 @@ public struct ClaudeTeacher: TeacherProvider {
             throw error
         } catch is CancellationError {
             throw CancellationError()
-        } catch let error as URLError where error.code == .cancelled {
-            // URLSession reports a cancelled task as URLError(.cancelled), not CancellationError.
-            // Surfacing it as an outage would let users leaving a screen trip the breaker.
-            throw CancellationError()
         } catch {
+            // URLSession reports a cancelled task as URLError(.cancelled), not CancellationError. Only when
+            // *this* task was cancelled is that the caller leaving. The same -999 also comes from a delegate
+            // rejecting an auth challenge (for example a failed TLS pin) or an invalidated session; those are
+            // real failures and stay `.unavailable`.
             if Task.isCancelled { throw CancellationError() }
             throw TeacherError.unavailable
         }
         if let error = Self.mapStatus(response.statusCode) { throw error }
         return try Self.parseLabel(from: data, allowedLabels: allowedLabels)
+    }
+}
+
+// The API key must never appear in logs: `print`, string interpolation, `debugPrint` and `dump` all go
+// through these.
+extension ClaudeTeacher: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    public var description: String { "ClaudeTeacher(model: \(modelID), endpoint: \(endpoint.absoluteString), apiKey: <redacted>)" }
+    public var debugDescription: String { description }
+    public var customMirror: Mirror {
+        Mirror(self, children: ["modelID": modelID, "endpoint": endpoint, "apiKey": "<redacted>"], displayStyle: .struct)
     }
 }

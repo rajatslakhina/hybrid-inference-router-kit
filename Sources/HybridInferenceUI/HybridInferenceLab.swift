@@ -121,30 +121,32 @@ public final class HybridInferenceLab {
     /// Trains student v1 on the seed set, calibrates it, and starts a fresh router with a healthy teacher
     /// at the base price.
     public func prepare() async {
-        await perform { [self] in
-            teacher = ScriptedTeacher(
-                modelID: scenario.teacherModelID,
-                rules: scenario.teacherRules,
-                fallbackLabel: scenario.teacherFallback
-            )
-            teacherGeneration = 1
-            studentGeneration = 0
-            teacherMode = .healthy
-            priceRaised = false
-            let model = try NaiveBayesStudent(training: scenario.seed, version: nextStudentVersion())
-            let calibration = calibrate(model)
-            let policy = calibration.policy()
-            let router = HybridRouter(student: model, teacher: teacher, configuration: scenario.configuration)
-            await router.install(model, policy: policy)
-            self.router = router
-            incumbent = Evaluator.evaluate(model, on: scenario.evalSet, policy: policy)
-            activeThreshold = calibration.threshold
-            studentGeneration = Self.bumped(studentGeneration)
-            recent = []
-            lastGate = nil
-            runs = 0
-            snapshot = await router.snapshot()
-        }
+        await perform { [self] in try await doPrepare() }
+    }
+
+    private func doPrepare() async throws {
+        teacher = ScriptedTeacher(
+            modelID: scenario.teacherModelID,
+            rules: scenario.teacherRules,
+            fallbackLabel: scenario.teacherFallback
+        )
+        teacherGeneration = 1
+        studentGeneration = 0
+        teacherMode = .healthy
+        priceRaised = false
+        let model = try NaiveBayesStudent(training: scenario.seed, version: nextStudentVersion())
+        let calibration = calibrate(model)
+        let policy = calibration.policy()
+        let router = HybridRouter(student: model, teacher: teacher, configuration: scenario.configuration)
+        await router.install(model, policy: policy)
+        self.router = router
+        incumbent = Evaluator.evaluate(model, on: scenario.evalSet, policy: policy)
+        activeThreshold = calibration.threshold
+        studentGeneration = Self.bumped(studentGeneration)
+        recent = []
+        lastGate = nil
+        runs = 0
+        snapshot = await router.snapshot()
     }
 
     /// 1-based number of the batch the next `runTraffic()` serves (batches cycle after the last one).
@@ -161,18 +163,20 @@ public final class HybridInferenceLab {
 
     /// Serves the next day of traffic, then spends a little budget on shadow samples.
     public func runTraffic() async {
-        await perform { [self] in
-            guard let router else { return }
-            await router.resetCounters()
-            for text in nextBatch {
-                let answer = await router.route(text)
-                recent.insert(answer, at: 0)
-                if recent.count > Self.recentLimit { recent.removeLast(recent.count - Self.recentLimit) }
-            }
-            await router.drainShadowQueue(maxCalls: scenario.shadowCallsPerRun)
-            runs = Self.bumped(runs)   // never wraps negative, so `runs % count` stays a valid index
-            snapshot = await router.snapshot()
+        await perform { [self] in await doRunTraffic() }
+    }
+
+    private func doRunTraffic() async {
+        guard let router else { return }
+        await router.resetCounters()
+        for text in nextBatch {
+            let answer = await router.route(text)
+            recent.insert(answer, at: 0)
+            if recent.count > Self.recentLimit { recent.removeLast(recent.count - Self.recentLimit) }
         }
+        await router.drainShadowQueue(maxCalls: scenario.shadowCallsPerRun)
+        runs = Self.bumped(runs)   // never wraps negative, so `runs % count` stays a valid index
+        snapshot = await router.snapshot()
     }
 
     /// Retrains on seed + Claude's harvested labels and lets the promotion gate decide.
@@ -180,81 +184,90 @@ public final class HybridInferenceLab {
     /// - Parameter drifted: rotate every harvested label to the next label first, simulating a teacher
     ///   whose behaviour changed underneath you (a silent model update, a prompt regression).
     public func retrain(drifted: Bool) async {
-        await perform { [self] in
-            guard let router else { return }
-            var harvested = await router.harvestedExamples()
-            if drifted { harvested = Self.rotateLabels(harvested) }
-            let training = TrainingSetBuilder.build(
-                seed: scenario.seed, harvested: harvested, excluding: scenario.evalSet
-            )
-            let candidate = try NaiveBayesStudent(training: training.examples, version: nextStudentVersion())
-            let calibration = calibrate(candidate)
-            let policy = calibration.policy()
-            let report = Evaluator.evaluate(candidate, on: scenario.evalSet, policy: policy)
-            let decision = scenario.gate.decide(candidate: report, incumbent: incumbent)
-            lastGate = GateRecord(
-                candidate: report, incumbent: incumbent, decision: decision,
-                candidateThreshold: calibration.threshold, trainingCount: training.examples.count,
-                leakExcluded: training.excludedForLeak, drifted: drifted
-            )
-            studentGeneration = Self.bumped(studentGeneration)
-            if decision.isPromotion {
-                await router.install(candidate, policy: policy)
-                incumbent = report
-                activeThreshold = calibration.threshold
-            }
-            snapshot = await router.snapshot()
+        await perform { [self] in try await doRetrain(drifted: drifted) }
+    }
+
+    private func doRetrain(drifted: Bool) async throws {
+        guard let router else { return }
+        var harvested = await router.harvestedExamples()
+        if drifted { harvested = Self.rotateLabels(harvested) }
+        let training = TrainingSetBuilder.build(
+            seed: scenario.seed, harvested: harvested, excluding: scenario.evalSet
+        )
+        let candidate = try NaiveBayesStudent(training: training.examples, version: nextStudentVersion())
+        let calibration = calibrate(candidate)
+        let policy = calibration.policy()
+        let report = Evaluator.evaluate(candidate, on: scenario.evalSet, policy: policy)
+        let decision = scenario.gate.decide(candidate: report, incumbent: incumbent)
+        lastGate = GateRecord(
+            candidate: report, incumbent: incumbent, decision: decision,
+            candidateThreshold: calibration.threshold, trainingCount: training.examples.count,
+            leakExcluded: training.excludedForLeak, drifted: drifted
+        )
+        studentGeneration = Self.bumped(studentGeneration)
+        if decision.isPromotion {
+            await router.install(candidate, policy: policy)
+            incumbent = report
+            activeThreshold = calibration.threshold
         }
+        snapshot = await router.snapshot()
     }
 
     public func setTeacherMode(_ mode: TeacherMode) async {
-        await perform { [self] in
-            guard let router, mode != teacherMode else { return }
-            if teacherMode == .retired {
-                // A retired model never comes back: migrate to a successor model, which resets the breaker.
-                teacherGeneration = Self.bumped(teacherGeneration)
-                teacher = ScriptedTeacher(
-                    modelID: "\(scenario.teacherModelID)-successor-\(teacherGeneration)",
-                    rules: scenario.teacherRules,
-                    fallbackLabel: scenario.teacherFallback
-                )
-                await router.replaceTeacher(teacher)
-            }
-            await teacher.setFault(mode.fault)
-            teacherMode = mode
-            snapshot = await router.snapshot()
+        await perform { [self] in await doSetTeacherMode(mode) }
+    }
+
+    private func doSetTeacherMode(_ mode: TeacherMode) async {
+        guard let router, mode != teacherMode else { return }
+        if teacherMode == .retired {
+            // A retired model never comes back: migrate to a successor model, which resets the breaker.
+            teacherGeneration = Self.bumped(teacherGeneration)
+            teacher = ScriptedTeacher(
+                modelID: "\(scenario.teacherModelID)-successor-\(teacherGeneration)",
+                rules: scenario.teacherRules,
+                fallbackLabel: scenario.teacherFallback
+            )
+            await router.replaceTeacher(teacher)
         }
+        await teacher.setFault(mode.fault)
+        teacherMode = mode
+        snapshot = await router.snapshot()
     }
 
     /// Simulates the provider quadrupling its price. Budget capacity stays the same.
     public func setPriceRaised(_ raised: Bool) async {
-        await perform { [self] in
-            guard let router else { return }
-            let base = scenario.configuration.pricePerCallUnits
-            let (raisedPrice, overflow) = base.multipliedReportingOverflow(by: 4)
-            await router.reprice(unitsPerCall: raised ? (overflow ? Int.max : raisedPrice) : base)
-            priceRaised = raised
-            snapshot = await router.snapshot()
-        }
+        await perform { [self] in await doSetPriceRaised(raised) }
     }
 
-    /// Replays the scripted steps that lead to `stage`.
+    private func doSetPriceRaised(_ raised: Bool) async {
+        guard let router else { return }
+        let base = scenario.configuration.pricePerCallUnits
+        let (raisedPrice, overflow) = base.multipliedReportingOverflow(by: 4)
+        await router.reprice(unitsPerCall: raised ? (overflow ? Int.max : raisedPrice) : base)
+        priceRaised = raised
+        snapshot = await router.snapshot()
+    }
+
+    /// Replays the scripted steps that lead to `stage`, as one busy period: taps during the replay are
+    /// ignored, so they cannot interleave with it.
     public func run(to stage: LabStage) async {
-        await prepare()
-        guard stage != .fresh else { return }
-        await runTraffic()
-        switch stage {
-        case .fresh, .baseline:
-            return
-        case .retrained:
-            await retrain(drifted: false)
-            await runTraffic()
-        case .drifted:
-            await retrain(drifted: true)
-        case .outage:
-            await retrain(drifted: false)
-            await setTeacherMode(.outage)
-            await runTraffic()
+        await perform { [self] in
+            try await doPrepare()
+            guard stage != .fresh else { return }
+            await doRunTraffic()
+            switch stage {
+            case .fresh, .baseline:
+                return
+            case .retrained:
+                try await doRetrain(drifted: false)
+                await doRunTraffic()
+            case .drifted:
+                try await doRetrain(drifted: true)
+            case .outage:
+                try await doRetrain(drifted: false)
+                await doSetTeacherMode(.outage)
+                await doRunTraffic()
+            }
         }
     }
 

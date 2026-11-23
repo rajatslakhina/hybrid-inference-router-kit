@@ -117,14 +117,48 @@ final class ClaudeTeacherTests: XCTestCase {
         } catch { XCTAssertEqual(error as? TeacherError, .malformedResponse) }
     }
 
-    /// URLSession reports a cancelled task as URLError(.cancelled). That is a cancellation, not an outage.
-    func testURLSessionCancellationIsReportedAsCancellation() async {
+    /// URLError(.cancelled) while *this* task is not cancelled comes from a delegate rejecting an auth
+    /// challenge (e.g. a failed TLS pin) or an invalidated session. That is a real failure, never "user left".
+    /// The cancelled-task case is covered by `HybridRouterTests.testCancellationThroughClaudeTeacherDoesNotTripTheBreaker`.
+    func testURLErrorCancelledWithoutTaskCancellationIsAFailure() async {
         do {
             _ = try await teacher(StubTransport(error: URLError(.cancelled))).label("x", allowedLabels: allowed)
-            XCTFail("expected cancellation")
+            XCTFail("expected a failure")
         } catch {
-            XCTAssertTrue(error is CancellationError, "got \(error)")
+            XCTAssertEqual(error as? TeacherError, .unavailable)
         }
+    }
+
+    func testLongInputIsTruncatedBeforeItIsSent() async throws {
+        let transport = StubTransport(json: reply("bug"))
+        let capped = ClaudeTeacher(apiKey: "k", model: "m", transport: transport, maxInputCharacters: 10)
+        _ = try await capped.label(String(repeating: "a", count: 50_000), allowedLabels: allowed)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: try XCTUnwrap(transport.lastRequest?.httpBody))
+            as? [String: Any])
+        let content = try XCTUnwrap((json["messages"] as? [[String: String]])?.first?["content"])
+        XCTAssertEqual(content, "<input>" + String(repeating: "a", count: 10) + "</input>")
+    }
+
+    func testTheAPIKeyNeverAppearsInDescriptionsOrDumps() {
+        let subject = ClaudeTeacher(apiKey: "sk-secret-123", model: "m")
+        var dumped = ""
+        dump(subject, to: &dumped)
+        for text in [String(describing: subject), String(reflecting: subject), "\(subject)", dumped] {
+            XCTAssertFalse(text.contains("sk-secret-123"), text)
+            XCTAssertTrue(text.contains("redacted"), text)
+        }
+    }
+
+    /// Credential problems hit every request, so they count towards the breaker; a 400/413/422 is
+    /// usually one bad input and must not open the breaker for everyone.
+    func testOnlyCredentialRejectionsCountAsOutages() {
+        XCTAssertTrue(TeacherError.rejectedRequest(status: 401).countsAsOutage)
+        XCTAssertTrue(TeacherError.rejectedRequest(status: 403).countsAsOutage)
+        XCTAssertTrue(TeacherError.rejectedRequest(status: 407).countsAsOutage)
+        XCTAssertFalse(TeacherError.rejectedRequest(status: 400).countsAsOutage)
+        XCTAssertFalse(TeacherError.rejectedRequest(status: 413).countsAsOutage)
+        XCTAssertFalse(TeacherError.rejectedRequest(status: 422).countsAsOutage)
+        XCTAssertFalse(TeacherError.rejectedRequest(status: 400).isBillable)
     }
 
     func testTransportErrorsBecomeUnavailable() async {

@@ -241,6 +241,29 @@ final class HybridRouterTests: XCTestCase {
         XCTAssertEqual(snapshot.spentUnits, 0)
     }
 
+    /// A teacher that reports cancellation as an ordinary error (as URLSession does). The router must
+    /// still recognise its own caller's cancellation and not count an outage.
+    func testRouterTreatsAnyErrorAfterItsCallerWasCancelledAsCancellation() async {
+        let teacher = UnavailableOnCancelTeacher()
+        let router = HybridRouter(student: student(), teacher: teacher,
+                                  configuration: configuration(threshold: 1, timeout: .seconds(60)))
+        let task = Task { await router.route("unsure") }
+        let arrived = await eventually { await teacher.calls == 1 }
+        XCTAssertTrue(arrived)
+        task.cancel()
+        let answer = await task.value
+        XCTAssertEqual(answer.source, .studentFallback(.cancelled))
+        let snapshot = await router.snapshot()
+        XCTAssertEqual(snapshot.breaker, .closed(consecutiveFailures: 0))
+        XCTAssertEqual(snapshot.spentUnits, 0)
+    }
+
+    func testNonPositiveTimeoutFallsBackToTheDefault() {
+        XCTAssertEqual(RouterConfiguration(teacherTimeout: .zero).teacherTimeout, .seconds(8))
+        XCTAssertEqual(RouterConfiguration(teacherTimeout: .seconds(-1)).teacherTimeout, .seconds(8))
+        XCTAssertEqual(RouterConfiguration(teacherTimeout: .milliseconds(5)).teacherTimeout, .milliseconds(5))
+    }
+
     /// Budget is checked before the breaker. After the cool-down, a request the budget refuses must not
     /// move the breaker to half-open; the probe stays available for a request that can pay for it.
     func testABudgetRefusalLeavesTheBreakersProbeUntouched() async {

@@ -118,14 +118,15 @@ version-pinned remote package.
 | --- | --- | --- | --- |
 | Provider outage / 5xx / network error | student answer, `teacherFailed` | refunded | counts a failure |
 | HTTP 429 | student answer, `teacherFailed` | refunded | counts a failure |
-| Other 4xx (bad key, bad request) | student answer, `teacherFailed` (`.rejectedRequest`) | refunded | counts a failure |
+| HTTP 401 / 403 / 407 (credentials) | student answer, `teacherFailed` (`.rejectedRequest`) | refunded | counts a failure |
+| Other 4xx (400, 413, 422: usually one bad input) | student answer, `teacherFailed` (`.rejectedRequest`) | refunded | healthy |
 | Teacher exceeds `teacherTimeout` | student answer, `teacherFailed` (`.timedOut`) | charged (conservative) | counts a failure |
 | Model retired (HTTP 404) | student answer, `teacherRetired`, until `replaceTeacher` | refunded | retired |
 | Refusal | student answer, `teacherRefused` | charged | healthy |
 | Off-list label | student answer, `offListLabel`; not harvested | charged | healthy |
 | Budget spent for the window | student answer, `budgetExhausted`; teacher not called | — | untouched |
 | Breaker open | student answer, `circuitOpen`; teacher not called | refunded | — |
-| Caller cancelled (including `URLError(.cancelled)` from `URLSession`) | student answer, `cancelled` | refunded | untouched |
+| Caller cancelled (the calling task was cancelled; URLSession's `URLError(.cancelled)` counts only then) | student answer, `cancelled` | refunded | untouched |
 | Blank or punctuation-only input | escalates as `.emptyInput` and is billed, but never harvested | charged | as for the call |
 | Price raised (`reprice`) | fewer escalations fit the same cap | new price applies to new reservations | — |
 | Teacher labels drift | a retrain on them is rejected by `PromotionGate` | — | — |
@@ -163,24 +164,27 @@ if PromotionGate().decide(candidate: candidate, incumbent: incumbent).isPromotio
 Add it with Swift Package Manager:
 
 ```swift
-.package(url: "https://github.com/rajatslakhina/hybrid-inference-router-kit.git", from: "1.0.0")
+.package(url: "https://github.com/rajatslakhina/hybrid-inference-router-kit.git", from: "1.2.0")
 ```
 
 ## Verification
 
 - `swift build -Xswiftc -warnings-as-errors` from a clean `.build`: 0 warnings, 0 errors.
-- `swift test`: 97 XCTest tests, 0 failures. They include hand-computed Laplace probabilities, a golden
+- `swift test`: 103 XCTest tests, 0 failures. They include hand-computed Laplace probabilities, a golden
   FNV-1a vector and a golden shadow-sample bucket, calibration tie handling and floors, every breaker
   transition, budget window roll-over and saturation, 40 overlapping escalations against a 10-call budget (the
   test asserts the calls really overlapped), cancellation through `ClaudeTeacher` with a URLSession-style
-  transport, timeout, teacher replacement during an in-flight call, a stubbed-transport suite for
+  transport, `URLError(.cancelled)` without a cancelled task treated as a failure, API-key redaction, input
+  truncation, timeout, teacher replacement during an in-flight call, a stubbed-transport suite for
   `ClaudeTeacher`, and the end-to-end loop measured on day-two tickets that neither student trained on.
   `LabStageTests` drives `HybridInferenceLab` with the demo app's exact scenario and asserts the numbers shown
-  in its screenshots.
-- `python3 Scripts/mutation_check.py`: 12 mutants. Each one removes or reorders one guard: in-flight
+  in its four screenshots, plus the retired-teacher migration and the 4× price rise. The demo's CI checks that
+  its scenario still matches this copy.
+- `python3 Scripts/mutation_check.py`: 13 mutants. Each one removes or reorders one guard: in-flight
   reservations, tie handling, stale breaker results ×2, retirement generation, the off-list label check,
-  cancellation accounting, the eval leak guard, per-label recall in the gate, budget-before-breaker order,
-  the shadow drain taking the half-open probe, and the non-finite confidence check. A mutant counts as
+  cancellation accounting, the router recognising its caller's cancellation, the eval leak guard, per-label
+  recall in the gate, budget-before-breaker order, the shadow drain taking the half-open probe, and the
+  non-finite confidence check. A mutant counts as
   killed only if its named test ran and failed.
 - CI ([Actions](https://github.com/rajatslakhina/hybrid-inference-router-kit/actions)) runs three `macos-15`
   jobs on pushes to `main`, on `v*` tags and on pull requests: build and test with warnings as errors, an iOS
@@ -212,10 +216,15 @@ Add it with Swift Package Manager:
   label. Short-circuit both before `route` if they matter to you.
 - **Billing assumptions are conservative estimates.** They are not provider billing rules. Real cost should come
   from the usage the provider reports.
+- **Budget units are per call, not per token.** `ClaudeTeacher` truncates input to `maxInputCharacters`
+  (4,000 by default) and caps output at `maxTokens`, so the cost of one call is bounded, but a long ticket
+  still costs more than a short one for the same unit.
 - **Prompt injection is reduced, not removed.** The input is fenced (every `<` and `>` in it is escaped) and the
   label list is enforced, but a crafted ticket can still steer Claude towards a different *allowed* label.
   The promotion gate catches it only if the eval set covers the case.
-- **Privacy is out of scope.** Escalation sends user text to a third party, and harvesting stores it for training.
+- **Privacy is out of scope.** Escalation sends user text to a third party, and so does shadow sampling (by
+  default 5% of the inputs the student answered on device, once the app calls `drainShadowQueue`). Harvesting
+  stores that text for training.
   Shipping this needs consent, redaction and a retention policy, none of which this package implements.
 - **The teacher is treated as ground truth.** Teacher mistakes become training data. The gate limits the damage
   only as far as the eval set reaches.
