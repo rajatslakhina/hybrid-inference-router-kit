@@ -10,7 +10,7 @@ next student is retrained on that data, calibrated, and has to pass a promotion 
 [![CI](https://github.com/rajatslakhina/hybrid-inference-router-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/rajatslakhina/hybrid-inference-router-kit/actions/workflows/ci.yml)
 ![Swift 6](https://img.shields.io/badge/Swift-6-orange) ![Platforms](https://img.shields.io/badge/platforms-iOS%2017%20%7C%20macOS%2014-blue) ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 
-Demo app: (added after the companion repo is pushed — see below)
+**Demo app:** [hybrid-inference-router-demo-app](https://github.com/rajatslakhina/hybrid-inference-router-demo-app), a separate iOS app that pins this package as a remote dependency and runs the whole loop on a Simulator, with screenshots.
 
 ---
 
@@ -194,7 +194,7 @@ Add it with Swift Package Manager:
 - CI ([Actions](https://github.com/rajatslakhina/hybrid-inference-router-kit/actions)) runs three `macos-15`
   jobs on pushes to `main`, on `v*` tags and on pull requests: build and test with warnings as errors, an iOS
   Simulator build of both library targets, and the mutation check.
-- The demo app was run on an iOS Simulator; see the demo repository for what was run and the screenshots.
+- The demo app was run on an iOS Simulator; see the [demo repository](https://github.com/rajatslakhina/hybrid-inference-router-demo-app#verification) for what was run and the screenshots.
 
 ## Honest limits
 
