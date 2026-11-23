@@ -77,7 +77,7 @@ private struct RoutingSummaryCard: View {
             "threshold \(thresholdText)",
             "\(snapshot.harvested) Claude labels harvested",
         ]
-        if snapshot.shadowAgreements + snapshot.shadowDisagreements > 0 {
+        if snapshot.shadowAgreements > 0 || snapshot.shadowDisagreements > 0 {
             parts.append("shadow \(snapshot.shadowAgreements) agree / \(snapshot.shadowDisagreements) disagree")
         }
         let reasons = FallbackReason.allCases.compactMap { reason -> String? in

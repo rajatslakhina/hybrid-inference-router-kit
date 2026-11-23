@@ -266,6 +266,29 @@ final class HybridRouterTests: XCTestCase {
                        RouterConfiguration.maxTeacherTimeout)
     }
 
+    /// `RouterConfiguration`'s properties are settable after init, so the router re-sanitises them. A zero
+    /// timeout set this way must not make every escalation time out.
+    func testRouterSanitisesAZeroTimeoutSetAfterInit() async {
+        var config = configuration()
+        config.teacherTimeout = .zero
+        config.pricePerCallUnits = -5
+        let router = HybridRouter(student: student(), teacher: ProgrammableTeacher(latency: .milliseconds(10)),
+                                  configuration: config)
+        let answer = await router.route("unsure")
+        XCTAssertEqual(answer.source, .teacher(modelID: "teacher-a"))
+        let snapshot = await router.snapshot()
+        XCTAssertEqual(snapshot.pricePerCallUnits, 0)
+    }
+
+    func testRouterClampsAHugeTimeoutSetAfterInit() async {
+        var config = configuration()
+        config.teacherTimeout = .seconds(Int64.max)
+        let router = HybridRouter(student: student(), teacher: ProgrammableTeacher(latency: .milliseconds(10)),
+                                  configuration: config)
+        let answer = await router.route("unsure")
+        XCTAssertEqual(answer.source, .teacher(modelID: "teacher-a"))
+    }
+
     /// Budget is checked before the breaker. After the cool-down, a request the budget refuses must not
     /// move the breaker to half-open; the probe stays available for a request that can pay for it.
     func testABudgetRefusalLeavesTheBreakersProbeUntouched() async {

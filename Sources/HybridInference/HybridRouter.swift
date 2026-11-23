@@ -24,6 +24,14 @@ public struct RouterConfiguration: Sendable {
     /// Upper bound for `teacherTimeout` (10 minutes).
     public static let maxTeacherTimeout: Duration = .seconds(600)
 
+    /// A zero or negative timeout would time out (and bill, and count as an outage) every escalation, so it
+    /// falls back to 8 s. Above `maxTeacherTimeout` it is clamped: no escalation should wait that long, and a
+    /// huge value such as `.seconds(Int64.max)` would overflow the sleep deadline. Applied both here and in
+    /// `HybridRouter.init`, because the property is publicly settable after initialisation.
+    static func sanitizedTimeout(_ timeout: Duration) -> Duration {
+        timeout <= .zero ? .seconds(8) : min(timeout, maxTeacherTimeout)
+    }
+
     public init(
         policy: EscalationPolicy = .escalateAll,
         budget: BudgetConfiguration = BudgetConfiguration(capacityUnits: 100),
@@ -40,14 +48,7 @@ public struct RouterConfiguration: Sendable {
         self.budget = budget
         self.pricePerCallUnits = max(pricePerCallUnits, 0)
         self.breaker = breaker
-        // A zero or negative timeout would time out (and bill, and count as an outage) every escalation.
-        // Above `maxTeacherTimeout` it is clamped: no escalation should wait that long, and a huge value
-        // such as `.seconds(Int64.max)` would overflow the sleep deadline.
-        if teacherTimeout <= .zero {
-            self.teacherTimeout = .seconds(8)
-        } else {
-            self.teacherTimeout = min(teacherTimeout, Self.maxTeacherTimeout)
-        }
+        self.teacherTimeout = Self.sanitizedTimeout(teacherTimeout)
         self.shadowSampleRate = shadowSampleRate
         self.shadowSalt = shadowSalt
         self.shadowQueueCapacity = max(shadowQueueCapacity, 0)
@@ -171,8 +172,9 @@ public actor HybridRouter {
         self.breaker = CircuitBreaker(configuration: configuration.breaker)
         self.harvest = TrainingBuffer(capacity: configuration.harvestCapacity)
         self.shadowQueue = BoundedQueue(capacity: configuration.shadowQueueCapacity)
-        self.price = configuration.pricePerCallUnits
-        self.timeout = configuration.teacherTimeout
+        // Re-sanitised here: `RouterConfiguration`'s properties are `var`, so a caller can set them after init.
+        self.price = max(configuration.pricePerCallUnits, 0)
+        self.timeout = RouterConfiguration.sanitizedTimeout(configuration.teacherTimeout)
         self.sampler = ShadowSampler(rate: configuration.shadowSampleRate, salt: configuration.shadowSalt)
         self.shadowHeadroom = configuration.shadowHeadroomUnits
         self.clock = clock

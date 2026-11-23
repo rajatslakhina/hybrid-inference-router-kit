@@ -138,6 +138,13 @@ MUTANTS = [
         "case .timerCancelled: throw CancellationError()",
         "HybridRouterTests/testWithTimeoutLetsTheOperationsOutcomeSurfaceAfterCallerCancellation",
     ),
+    (
+        "router-trusts-unsanitised-timeout",
+        SRC / "HybridRouter.swift",
+        "self.timeout = RouterConfiguration.sanitizedTimeout(configuration.teacherTimeout)",
+        "self.timeout = configuration.teacherTimeout",
+        "HybridRouterTests/testRouterSanitisesAZeroTimeoutSetAfterInit",
+    ),
 ]
 
 
