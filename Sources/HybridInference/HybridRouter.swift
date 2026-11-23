@@ -9,7 +9,8 @@ public struct RouterConfiguration: Sendable {
     /// What one teacher call costs, in the budget's units. Change it at runtime with `reprice`.
     public var pricePerCallUnits: Int
     public var breaker: BreakerConfiguration
-    /// Latency budget for one teacher call. Enforced by cancellation (see `withTimeout`).
+    /// Latency budget for one teacher call, in `(0, maxTeacherTimeout]`; a non-positive value falls back to
+    /// 8 s. Enforced by cancellation (see `withTimeout`).
     public var teacherTimeout: Duration
     /// Share of confidently-answered requests also sent to the teacher in the background, `0...1`.
     public var shadowSampleRate: Double
@@ -19,6 +20,9 @@ public struct RouterConfiguration: Sendable {
     /// Units shadow traffic must always leave free for live escalations.
     public var shadowHeadroomUnits: Int
     public var harvestCapacity: Int
+
+    /// Upper bound for `teacherTimeout` (10 minutes).
+    public static let maxTeacherTimeout: Duration = .seconds(600)
 
     public init(
         policy: EscalationPolicy = .escalateAll,
@@ -37,7 +41,13 @@ public struct RouterConfiguration: Sendable {
         self.pricePerCallUnits = max(pricePerCallUnits, 0)
         self.breaker = breaker
         // A zero or negative timeout would time out (and bill, and count as an outage) every escalation.
-        self.teacherTimeout = teacherTimeout > .zero ? teacherTimeout : .seconds(8)
+        // Above `maxTeacherTimeout` it is clamped: no escalation should wait that long, and a huge value
+        // such as `.seconds(Int64.max)` would overflow the sleep deadline.
+        if teacherTimeout <= .zero {
+            self.teacherTimeout = .seconds(8)
+        } else {
+            self.teacherTimeout = min(teacherTimeout, Self.maxTeacherTimeout)
+        }
         self.shadowSampleRate = shadowSampleRate
         self.shadowSalt = shadowSalt
         self.shadowQueueCapacity = max(shadowQueueCapacity, 0)

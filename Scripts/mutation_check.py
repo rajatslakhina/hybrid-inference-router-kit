@@ -124,6 +124,20 @@ MUTANTS = [
         "",
         "HybridRouterTests/testRouterTreatsAnyErrorAfterItsCallerWasCancelledAsCancellation",
     ),
+    (
+        "claude-teacher-ignores-task-cancellation",
+        SRC / "Teacher.swift",
+        "            if Task.isCancelled { throw CancellationError() }\n",
+        "",
+        "ClaudeTeacherTests/testURLErrorCancelledInACancelledTaskIsACancellation",
+    ),
+    (
+        "timeout-timer-races-the-operation",
+        SRC / "HybridRouter.swift",
+        "case .timerCancelled: continue",
+        "case .timerCancelled: throw CancellationError()",
+        "HybridRouterTests/testWithTimeoutLetsTheOperationsOutcomeSurfaceAfterCallerCancellation",
+    ),
 ]
 
 

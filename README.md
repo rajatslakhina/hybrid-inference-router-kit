@@ -164,27 +164,29 @@ if PromotionGate().decide(candidate: candidate, incumbent: incumbent).isPromotio
 Add it with Swift Package Manager:
 
 ```swift
-.package(url: "https://github.com/rajatslakhina/hybrid-inference-router-kit.git", from: "1.2.0")
+.package(url: "https://github.com/rajatslakhina/hybrid-inference-router-kit.git", from: "1.2.1")
 ```
 
 ## Verification
 
 - `swift build -Xswiftc -warnings-as-errors` from a clean `.build`: 0 warnings, 0 errors.
-- `swift test`: 103 XCTest tests, 0 failures. They include hand-computed Laplace probabilities, a golden
+- `swift test`: 105 XCTest tests, 0 failures. They include hand-computed Laplace probabilities, a golden
   FNV-1a vector and a golden shadow-sample bucket, calibration tie handling and floors, every breaker
   transition, budget window roll-over and saturation, 40 overlapping escalations against a 10-call budget (the
   test asserts the calls really overlapped), cancellation through `ClaudeTeacher` with a URLSession-style
-  transport, `URLError(.cancelled)` without a cancelled task treated as a failure, API-key redaction, input
+  transport (both through the router and with `ClaudeTeacher` used directly), `URLError(.cancelled)` without a
+  cancelled task treated as a failure, the timeout timer standing down when the caller is cancelled, API-key redaction, input
   truncation, timeout, teacher replacement during an in-flight call, a stubbed-transport suite for
   `ClaudeTeacher`, and the end-to-end loop measured on day-two tickets that neither student trained on.
   `LabStageTests` drives `HybridInferenceLab` with the demo app's exact scenario and asserts the numbers shown
   in its four screenshots, plus the retired-teacher migration and the 4× price rise. The demo's CI checks that
   its scenario still matches this copy.
-- `python3 Scripts/mutation_check.py`: 13 mutants. Each one removes or reorders one guard: in-flight
+- `python3 Scripts/mutation_check.py`: 15 mutants. Each one removes or reorders one guard: in-flight
   reservations, tie handling, stale breaker results ×2, retirement generation, the off-list label check,
-  cancellation accounting, the router recognising its caller's cancellation, the eval leak guard, per-label
-  recall in the gate, budget-before-breaker order, the shadow drain taking the half-open probe, and the
-  non-finite confidence check. A mutant counts as
+  cancellation accounting, the router recognising its caller's cancellation, `ClaudeTeacher` recognising a
+  cancelled task, the timeout timer standing down, the eval leak guard, per-label recall in the gate,
+  budget-before-breaker order, the shadow drain taking the half-open probe, and the non-finite confidence
+  check. A mutant counts as
   killed only if its named test ran and failed.
 - CI ([Actions](https://github.com/rajatslakhina/hybrid-inference-router-kit/actions)) runs three `macos-15`
   jobs on pushes to `main`, on `v*` tags and on pull requests: build and test with warnings as errors, an iOS

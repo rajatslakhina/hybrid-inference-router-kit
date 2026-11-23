@@ -262,6 +262,8 @@ final class HybridRouterTests: XCTestCase {
         XCTAssertEqual(RouterConfiguration(teacherTimeout: .zero).teacherTimeout, .seconds(8))
         XCTAssertEqual(RouterConfiguration(teacherTimeout: .seconds(-1)).teacherTimeout, .seconds(8))
         XCTAssertEqual(RouterConfiguration(teacherTimeout: .milliseconds(5)).teacherTimeout, .milliseconds(5))
+        XCTAssertEqual(RouterConfiguration(teacherTimeout: .seconds(Int64.max)).teacherTimeout,
+                       RouterConfiguration.maxTeacherTimeout)
     }
 
     /// Budget is checked before the breaker. After the cool-down, a request the budget refuses must not
@@ -286,6 +288,21 @@ final class HybridRouterTests: XCTestCase {
         await teacher.setDefault(.success("bug"))
         let probe = await router.route("unsure")
         XCTAssertEqual(probe.source, .teacher(modelID: "teacher-a"))
+    }
+
+    /// If the caller is cancelled, the timer stands down and the operation's own outcome surfaces. Here the
+    /// operation ignores cancellation and succeeds, so `withTimeout` must return its value, not throw.
+    func testWithTimeoutLetsTheOperationsOutcomeSurfaceAfterCallerCancellation() async throws {
+        let task = Task { () async throws -> String in
+            try await withTimeout(.seconds(60)) {
+                let start = ContinuousClock.now
+                while ContinuousClock.now - start < .milliseconds(200) { await Task.yield() }
+                return "finished"
+            }
+        }
+        task.cancel()
+        let value = try await task.value
+        XCTAssertEqual(value, "finished")
     }
 
     // MARK: Model swaps

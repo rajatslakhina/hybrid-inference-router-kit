@@ -119,13 +119,31 @@ final class ClaudeTeacherTests: XCTestCase {
 
     /// URLError(.cancelled) while *this* task is not cancelled comes from a delegate rejecting an auth
     /// challenge (e.g. a failed TLS pin) or an invalidated session. That is a real failure, never "user left".
-    /// The cancelled-task case is covered by `HybridRouterTests.testCancellationThroughClaudeTeacherDoesNotTripTheBreaker`.
+    /// The cancelled-task case is `testURLErrorCancelledInACancelledTaskIsACancellation`.
     func testURLErrorCancelledWithoutTaskCancellationIsAFailure() async {
         do {
             _ = try await teacher(StubTransport(error: URLError(.cancelled))).label("x", allowedLabels: allowed)
             XCTFail("expected a failure")
         } catch {
             XCTAssertEqual(error as? TeacherError, .unavailable)
+        }
+    }
+
+    /// Used directly (no router in front), a cancelled task whose URLSession-style transport throws
+    /// URLError(.cancelled) must surface as CancellationError.
+    func testURLErrorCancelledInACancelledTaskIsACancellation() async {
+        let transport = SlowCancellableTransport()
+        let subject = ClaudeTeacher(apiKey: "k", model: "m", transport: transport)
+        let allowed = self.allowed
+        let task = Task { try await subject.label("x", allowedLabels: allowed) }
+        let arrived = await eventually { transport.started == 1 }
+        XCTAssertTrue(arrived)
+        task.cancel()
+        do {
+            _ = try await task.value
+            XCTFail("expected cancellation")
+        } catch {
+            XCTAssertTrue(error is CancellationError, "got \(error)")
         }
     }
 
