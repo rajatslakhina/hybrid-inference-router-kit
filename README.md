@@ -166,7 +166,7 @@ if PromotionGate().decide(candidate: candidate, incumbent: incumbent).isPromotio
 Add it with Swift Package Manager:
 
 ```swift
-.package(url: "https://github.com/rajatslakhina/hybrid-inference-router-kit.git", from: "1.2.2")
+.package(url: "https://github.com/rajatslakhina/hybrid-inference-router-kit.git", from: "1.2.3")
 ```
 
 ## Verification

@@ -241,7 +241,7 @@ public final class HybridInferenceLab {
 
     private func doSetPriceRaised(_ raised: Bool) async {
         guard let router else { return }
-        let base = scenario.configuration.pricePerCallUnits
+        let base = max(scenario.configuration.pricePerCallUnits, 0)   // same floor the router applies
         let (raisedPrice, overflow) = base.multipliedReportingOverflow(by: 4)
         await router.reprice(unitsPerCall: raised ? (overflow ? Int.max : raisedPrice) : base)
         priceRaised = raised
